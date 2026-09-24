@@ -32,6 +32,12 @@ var rng: IncRandom = null
 ## runtime's `rand()`, not from `aRandom`, so the two streams are separate and
 ## both are simulation state.
 var crand: CRandom = CRandom.create()
+## The voice a spawn for a player other than 255 draws (`aGenerateUnitElement`,
+## [method UnitState.generate]). The engine's is the clock-seeded
+## `aRandom2`, which never repeats; this is D8's deterministic stand-in and,
+## like the campaign's, is not saved. No shipped script spawns for anyone but
+## player 255, so nothing the campaign plays draws from it.
+var speech: IncRandom = null
 var compat_flags: PackedStringArray = PackedStringArray()
 
 var _units: Dictionary = {}
@@ -55,10 +61,6 @@ var turn: TurnState = null
 ## hand-over reads to decide the mission is over.
 var game_control: GameControl = null
 
-## `0x00479330` -- the three unit types `aChangeUnitViewDirection` will not
-## turn.
-const ROTATE_REFUSED_TYPE_LOW: int = 61
-const ROTATE_REFUSED_TYPE_HIGH: int = 63
 ## docs/21 section 5 -- the species column's machines, which the pad offers
 ## neither *Rest* nor *Use* (`0x00472658`, `0x00472697`).
 const SPECIES_MACHINE: int = 3
@@ -203,6 +205,8 @@ static func create(map_document: Dictionary, balance: Dictionary,
 	# docs/92 section 10.3 item 2: seed explicitly even though the slice
 	# consumes no draws, so the state shape later traces compare is established.
 	world.rng.randomize_seed(rng_seed)
+	world.speech = IncRandom.new()
+	world.speech.randomize_seed(1.0)
 
 	var records: Array = DictRead.as_array(map_document["units"])
 	for record: Variant in records:
@@ -823,6 +827,8 @@ func _run_mission_script(call_type: int,
 	# it rides in from the resource rather than being recomputed (docs/42 §8.2).
 	context.object_cells = resource.object_cells()
 	context.ctrlmap = _ctrlmap
+	context.weapons = _weapons
+	context.speech = speech
 	var specials: Array[Dictionary] = resource.special_objects()
 	for id: int in range(specials.size()):
 		context.footprints[id] = DictRead.as_int32_array(specials[id]["cells"])
@@ -971,8 +977,7 @@ func submit_rotate(command: RotateCommand) -> bool:
 		return false
 	if command.facing < 0 or command.facing >= Interact.FACING_DX.size():
 		return false
-	if unit.type_id >= ROTATE_REFUSED_TYPE_LOW \
-			and unit.type_id <= ROTATE_REFUSED_TYPE_HIGH:
+	if not UnitState.turns(unit.type_id):
 		return false
 	unit.facing = command.facing
 	_mark("rotate", command.unit_slot, unit.x, unit.y, 0, 0, command.facing)
@@ -1640,6 +1645,7 @@ func clone() -> World:
 	copy.game_control = game_control.clone()
 	copy.rng = rng.clone()
 	copy.crand = crand.clone()
+	copy.speech = speech.clone()
 	copy.compat_flags = compat_flags.duplicate()
 	copy.selected_slot = selected_slot
 	copy.gore_level = gore_level

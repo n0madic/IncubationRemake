@@ -1536,8 +1536,10 @@ static func hatch(state: MapState, units: Dictionary, utab: UnitTypeTable,
 	var group: int = target.group
 	# `remove` is what zeroes the hit points -- `0x00477ABD`.
 	UnitState.remove(state, utab, turn, target)
-	var made: UnitState = UnitState.generate(state, units, utab, HATCH_PLAYER,
-		HATCH_TYPE, "", 0, 0, x, y, true)
+	# `exact` is set, so no field table is consulted; and the hatchling is
+	# player 255's, so no voice is drawn.
+	var made: UnitState = UnitState.generate(state, units, utab, wtab, null,
+		HATCH_PLAYER, HATCH_TYPE, "", 0, 0, x, y, true, turn.ai_level, null)
 	if made == null:
 		return -1
 	made.group = group

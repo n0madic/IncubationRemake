@@ -48,6 +48,9 @@ static func from_rows(rows: Array) -> UnitTypeTable:
 			"height": DictRead.as_int(record["height"]),
 			"armour_front": DictRead.as_int(record.get("armour_front", 0)),
 			"armour_rear": DictRead.as_int(record.get("armour_rear", 0)),
+			# `unitinfo[+0x06]`, the type's default weapon (docs/21 section 5).
+			# Absent from the hand-built fixtures, like the armour columns.
+			"weapon": DictRead.as_int(record.get("weapon", 0)),
 			"model": DictRead.as_string(record["model"]),
 			"description": DictRead.as_string(record["description"]),
 			# `SetUnitInfo`'s third string, the record's own letter into
@@ -114,6 +117,12 @@ func armour_front(type_id: int) -> int:
 
 func armour_rear(type_id: int) -> int:
 	return _field(type_id, "armour_rear", 0)
+
+
+## docs/21 section 5 -- `unitinfo[+0x06]`, the weapon `aGenerateUnitElement`
+## (`0x00479CF0`) copies into a new unit's `+0x3F`.
+func default_weapon(type_id: int) -> int:
+	return _field(type_id, "weapon", 0)
 
 
 func unit_size(type_id: int) -> int:

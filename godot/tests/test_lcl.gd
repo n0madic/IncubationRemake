@@ -20,7 +20,7 @@ extends TestSuite
 
 const DEV_CASES: String = "res://generated/lcl/lcl.json"
 const USER_CASES: String = "user://lcl/lcl.json"
-const SCHEMA: String = "incubation.lcl-cases/1"
+const SCHEMA: String = "incubation.lcl-cases/2"
 ## The native pin lives in the turn capture, because that is the session it was
 ## taken in; the *program* comes from the replay file, which is the only place
 ## a parsed script is.
@@ -206,6 +206,8 @@ func _mission(h: TestHarness, entry: Dictionary, arrays: PackedStringArray,
 		var context: LclContext = LclContext.create(state, units, types, turn,
 			control, rng, crand, DictRead.as_int(case["player"]),
 			DictRead.as_string(entry["next_map"]))
+		context.weapons = built["weapons"]
+		context.ctrlmap = built["ctrlmap"]
 
 		var env: PackedInt32Array = PackedInt32Array()
 		env.resize(LclEnv.ENV_SLOTS)
@@ -788,6 +790,7 @@ func _synthetic(h: TestHarness) -> void:
 		no_draw_ctx.crand.calls, 0,
 		"maxCount 0 returns 1 before the divide is reached")
 
+	_generate(h)
 	_statues(h)
 	_fixed_statues(h)
 	_land_table(h)
@@ -1072,8 +1075,132 @@ func _fixed_statues(h: TestHarness) -> void:
 		"`cmp byte [esi+0xd], 2` at `0x00414196`")
 
 
+## `aGenerateUnitElement` (`0x00479CF0`) -- docs/20 section 7.4. The corpus
+## replay compares the magazine and the cell; this pins the columns it does not
+## carry, which are exactly the ones whose absence made `_C_168`'s aliens
+## crawl one field a turn and never strike.
+func _generate(h: TestHarness) -> void:
+	var types: UnitTypeTable = UnitTypeTable.from_rows([
+		{"id": 0, "mp_max": 3, "fp_max": 0, "hp_max": 5, "special": 0,
+			"size": 0, "species": 0, "height": 18, "model": "",
+			"description": "soldier"},
+		{"id": UnitState.SPIDER_TYPE, "mp_max": 10, "fp_max": 255,
+			"hp_max": 1, "special": 0, "size": 0, "species": 0, "height": 4,
+			"model": "", "weapon": 17, "description": "Spider"},
+		{"id": 62, "mp_max": 0, "fp_max": 255, "hp_max": 4, "special": 0,
+			"size": 0, "species": 1, "height": 10, "model": "",
+			"weapon": 7, "description": "unturnable"},
+		{"id": 66, "mp_max": 4, "fp_max": 255, "hp_max": 12, "special": 16,
+			"size": 0, "species": 1, "height": 10, "model": "",
+			"armour_front": 2, "armour_rear": 2, "weapon": 7,
+			"description": "Bea'Coo"},
+	])
+	var weapons: WeaponTable = WeaponTable.from_rows([
+		{"id": 7, "mun": 5}, {"id": 17, "mun": 3}])
+	var ctrlmap: CtrlMapTable = CtrlMapTable.from_rows([
+		{"index": 0, "delay": 1, "name": "free"},
+		{"index": 2, "delay": 255, "name": "wall"}])
+
+	# A free cell, a soldier two fields south: the whole derived record.
+	var world: Dictionary = _run_synthetic(_program([]),
+		[{"slot": 0, "player": 0, "x": 2, "y": 4}], 5, 6)
+	var state: MapState = world["state"]
+	var units: Dictionary = world["units"]
+	var speech: IncRandom = IncRandom.new()
+	speech.randomize_seed(1.0)
+	var made: UnitState = UnitState.generate(state, units, types, weapons,
+		ctrlmap, UnitState.PLAYER_ALIEN, 66, "", 0, 0, 2, 2, false, 2, speech)
+	h.equal("generate.the_types_default_weapon", made.weapon, 7,
+		"unitinfo[+0x06] into +0x3F at 0x00479EC4")
+	h.equal("generate.recomputes_the_whole_record",
+		[made.hp, made.mp, made.fp, made.ammo, made.armour_front,
+			made.armour_rear],
+		[12, 4, Refresh.FP_NONE, 5, 2, 2],
+		"0x004759E0 at 0x00479F20: an alien has no fitness, not an empty one")
+	h.equal("generate.no_voice_for_player_255", [made.speech, speech.calls],
+		[0, 0])
+	h.equal("generate.faces_the_nearest_enemy", made.facing,
+		Combat.direction(2, 2, 2, 4), "0x0047A8E0 mode 1, then 0x004792A0")
+
+	# Mode 1 first: a hidden enemy one field away loses to a visible one three.
+	world = _run_synthetic(_program([]),
+		[{"slot": 0, "player": 0, "x": 3, "y": 2,
+			"visibility": UnitState.VISIBILITY_HIDDEN},
+		{"slot": 1, "player": 0, "x": 2, "y": 5}], 5, 6)
+	made = _generate_on(world, types, weapons, ctrlmap, UnitState.PLAYER_ALIEN, 66,
+		"", 0, 2, 2, speech)
+	h.equal("generate.a_visible_enemy_before_a_nearer_hidden_one",
+		made.facing, Combat.direction(2, 2, 2, 5))
+	# Mode 2 when nobody is visible: the hidden one is still an enemy.
+	world = _run_synthetic(_program([]),
+		[{"slot": 0, "player": 0, "x": 3, "y": 2,
+			"visibility": UnitState.VISIBILITY_HIDDEN}], 5, 6)
+	made = _generate_on(world, types, weapons, ctrlmap, UnitState.PLAYER_ALIEN, 66,
+		"", 0, 2, 2, speech)
+	h.equal("generate.any_enemy_when_none_is_visible", made.facing,
+		Combat.direction(2, 2, 3, 2))
+	world = _run_synthetic(_program([]),
+		[{"slot": 0, "player": 0, "x": 2, "y": 4}], 5, 6)
+	made = _generate_on(world, types, weapons, ctrlmap, UnitState.PLAYER_ALIEN, 62,
+		"", 0, 2, 2, speech)
+	h.equal("generate.types_61_to_63_keep_facing_0", made.facing, 0,
+		"0x00479330 refuses the turn")
+
+	# Occupied: `0x004308C0`'s direction order, then its test `0x00479C60`.
+	world = _run_synthetic(_program([]),
+		[{"slot": 0, "player": 255, "x": 2, "y": 2}], 5, 5)
+	made = _generate_on(world, types, weapons, ctrlmap, UnitState.PLAYER_ALIEN, 66,
+		"", 0, 2, 2, speech)
+	h.equal("generate.first_neighbour_is_direction_0", [made.x, made.y],
+		[2, 3], "(0,+1) -- not the row-major (1,1)")
+	var walled: Array = []
+	for i: int in range(25):
+		walled.append(2 if i == 3 * 5 + 2 else 0)
+	world = _run_synthetic(_program([]),
+		[{"slot": 0, "player": 255, "x": 2, "y": 2}], 5, 5,
+		{"field_type": walled})
+	made = _generate_on(world, types, weapons, ctrlmap, UnitState.PLAYER_ALIEN, 66,
+		"", 0, 2, 2, speech)
+	h.equal("generate.a_wall_is_not_a_landing", [made.x, made.y], [1, 2])
+	world = _run_synthetic(_program([]),
+		[{"slot": 0, "player": 255, "x": 2, "y": 2}], 5, 5)
+	var fired: MapState = world["state"]
+	fired.set_obstacle(fired.index_of(2, 3), MapState.OBSTACLE_FIRE)
+	fired.set_obstacle(fired.index_of(1, 2), MapState.OBSTACLE_MINE)
+	made = _generate_on(world, types, weapons, ctrlmap, UnitState.PLAYER_ALIEN, 66,
+		"", 0, 2, 2, speech)
+	h.equal("generate.fire_and_mines_are_not_landings", [made.x, made.y],
+		[2, 1])
+
+	# The voice: drawn for a human, fixed for the Spider.
+	world = _run_synthetic(_program([]), [], 5, 5)
+	made = _generate_on(world, types, weapons, ctrlmap, 0, 0,
+		"", 2, 1, 1, speech)
+	h.check("generate.a_human_draws_a_voice",
+		made.speech >= 1 and made.speech <= 6 and speech.calls == 1,
+		"speech %d, %d draw(s)" % [made.speech, speech.calls])
+	h.equal("generate.a_humans_ceiling_counts_the_rank", made.hp, 7,
+		"min(15, 5 + 24 / 12)")
+	made = _generate_on(world, types, weapons, ctrlmap, 0, UnitState.SPIDER_TYPE,
+		"Spidy", 0, 3, 3, speech)
+	h.equal("generate.the_spider_speaks_spidy_without_a_draw",
+		[made.speech, speech.calls], [UnitState.SPEECH_SPIDY, 1])
+
+
 ## `Statue` / `Statue2` -- `aPlayRotateStatueSequence` `0x00413A40`, the beam
 ## that kills. docs/42 section 8.1 as corrected by docs/97 section 41.
+
+
+## [method UnitState.generate] on a [method _run_synthetic] world, typed.
+static func _generate_on(world: Dictionary, types: UnitTypeTable,
+		weapons: WeaponTable, ctrlmap: CtrlMapTable, player: int, type_id: int,
+		name: String, rank: int, x: int, y: int,
+		speech: IncRandom) -> UnitState:
+	var map: MapState = world["state"]
+	var units: Dictionary = world["units"]
+	return UnitState.generate(map, units, types, weapons, ctrlmap, player,
+		type_id, name, rank, 0, x, y, false, 2, speech)
+
 func _statues(h: TestHarness) -> void:
 	# A 9x9 world so the six-cell reach fits either side of the middle.
 	var wide: int = 9

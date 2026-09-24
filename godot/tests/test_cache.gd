@@ -234,6 +234,9 @@ static func _check_cache_paths(h: TestHarness) -> void:
 const UNIT_COLUMNS: Array[String] = ["id", "mp_max", "fp_max", "hp_max",
 	"special", "size", "species", "exp", "height", "model", "description",
 	"armour_front", "armour_rear",
+	# The weapon `aGenerateUnitElement` gives a spawned unit (docs/20 section
+	# 7.4).
+	"weapon",
 	# The magnifier's letter into `Data.txt` (docs/43 section 5.2).
 	"key"]
 ## Columns [WeaponTable] reads, `ap` and `param` included -- both are what the

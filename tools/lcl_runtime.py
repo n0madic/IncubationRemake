@@ -570,6 +570,50 @@ def _barrier_checks(c: Checker) -> None:
              [v for n, v in out.events if n == "barrier_on"], [[2, 4, 3, 0]])
 
 
+def _spawn_checks(c: Checker) -> None:
+    """``0x00479CF0``'s cell, magazine, ceiling and voice -- ``docs/20`` §7.4.
+
+    Every shipped spawn lands on a free cell and is player 255's, so the
+    corpus replay reaches neither the neighbour order nor the voice; a spawn
+    that came out with an empty magazine passed it for a year.
+    """
+    bea_coo, ray_ther = 66, 50
+    row = _TABLES.units[bea_coo]
+    w = _flat_world(5, {}, set(), {})
+    made = w.spawn(runtime.PLAYER_COMPUTER, bea_coo, "", 0, 0, 2, 2)
+    c.expect("spawn.fills_the_default_weapons_magazine", made.ammo,
+             _TABLES.weapons[row.weapon].mun)
+    c.expect("spawn.hit_points_are_the_types", made.hit_points, row.hp_max)
+    c.expect("spawn.draws_no_voice_for_player_255",
+             (made.speech, w.speech.calls), (0, 0))
+
+    # Occupied: `0x004308C0`'s order is (0,+1), (-1,0), (0,-1), (+1,0), then
+    # the diagonals -- not the row-major sweep a first reading would write.
+    w = _flat_world(5, {}, set(), {0: (2, 2)})
+    made = w.spawn(runtime.PLAYER_COMPUTER, ray_ther, "", 0, 0, 2, 2)
+    c.expect("spawn.first_neighbour_is_direction_0", (made.x, made.y), (2, 3))
+    w = _flat_world(5, {}, {(2, 3)}, {0: (2, 2)})
+    made = w.spawn(runtime.PLAYER_COMPUTER, ray_ther, "", 0, 0, 2, 2)
+    c.expect("spawn.a_wall_is_not_a_landing", (made.x, made.y), (1, 2))
+    w = _flat_world(5, {}, set(), {0: (2, 2)})
+    w.effect_state[w.index(2, 3)] = ctrlmap.OBSTACLE_FIRE
+    w.effect_state[w.index(1, 2)] = ctrlmap.OBSTACLE_MINE
+    made = w.spawn(runtime.PLAYER_COMPUTER, ray_ther, "", 0, 0, 2, 2)
+    c.expect("spawn.fire_and_mines_are_not_landings", (made.x, made.y),
+             (2, 1))
+
+    w = _flat_world(5, {}, set(), {})
+    made = w.spawn(0, 0, "", 2, 0, 1, 1)
+    c.expect("spawn.a_humans_ceiling_counts_the_rank", made.hit_points,
+             min(15, _TABLES.units[0].hp_max + 2))
+    c.check("spawn.a_human_draws_a_voice",
+            1 <= made.speech <= 6 and w.speech.calls == 1,
+            f"speech {made.speech}, {w.speech.calls} draw(s)")
+    made = w.spawn(0, runtime.SPIDER_TYPE, "Spidy", 0, 0, 3, 3)
+    c.expect("spawn.the_spider_speaks_spidy_without_a_draw",
+             (made.speech, w.speech.calls), (runtime.SPEECH_SPIDY, 1))
+
+
 def _synthetic_checks(c: Checker) -> None:
     """The mechanics of ``docs/20`` §2 that the corpus does not exercise.
 
@@ -992,6 +1036,7 @@ def run_check(root: Path, show_stats: bool = False) -> int:
     _corpus_shape_checks(c, root, maps)
     _difficulty_census_checks(c, root, maps)
     _synthetic_checks(c)
+    _spawn_checks(c)
     _ground_checks(c)
     _statue_checks(c)
     _foot_bridge_checks(c)
@@ -1015,7 +1060,7 @@ def run_check(root: Path, show_stats: bool = False) -> int:
 # Re-expressing a run for the GDScript side
 # ---------------------------------------------------------------------------
 
-CASES_SCHEMA = "incubation.lcl-cases/1"
+CASES_SCHEMA = "incubation.lcl-cases/2"
 
 #: The missions the converter ships, and therefore the ones the GDScript replay
 #: can reach.  Corpus-wide ``N/N`` stays here, in Python: the cache holds four
@@ -1102,6 +1147,13 @@ def emit_cases(root: Path, out: Path, missions: list[str]) -> int:
             "cells": base_cells,
             "units": _case_units(world),
             "types": _case_types(world, tables),
+            # What a spawn's full recompute and its cell test read (docs/20
+            # §7.4): the magazine of the type's default weapon, and whether a
+            # field may be landed on.
+            "weapons": [{"id": i, "mun": r.mun}
+                        for i, r in sorted(tables.weapons.items())],
+            "ctrlmap": [{"index": i, "delay": r.delay, "name": r.name}
+                        for i, r in sorted(tables.ctrlmap.items())],
             # The header's own successor. `EnterNameOfNextMap` overwrites it,
             # and a mission that never calls the command still names one, so a
             # replay that started from an empty string would disagree with
@@ -1167,7 +1219,7 @@ def _case_types(world: runtime.LclWorld,
                      "fp_max": row.fp_max, "hp_max": row.hp_max,
                      "special": row.special, "size": row.size,
                      "species": row.species, "height": row.height,
-                     "exp": row.exp,
+                     "exp": row.exp, "weapon": row.weapon,
                      "model": row.model, "description": row.description})
     return rows
 

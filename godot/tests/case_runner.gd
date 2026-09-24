@@ -375,6 +375,9 @@ static func build_lcl_world(case: Dictionary) -> Dictionary:
 		"units": units,
 		"unit_types": UnitTypeTable.from_rows(
 			DictRead.as_array(case["types"])),
+		# What a spawn's recompute and its cell test read (docs/20 section 7.4).
+		"weapons": WeaponTable.from_rows(DictRead.as_array(case["weapons"])),
+		"ctrlmap": CtrlMapTable.from_rows(DictRead.as_array(case["ctrlmap"])),
 	}
 
 

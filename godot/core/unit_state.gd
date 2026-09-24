@@ -12,6 +12,18 @@ const NO_UNIT: int = -1
 const VISIBILITY_HIDDEN: int = 3
 ## docs/10 section 5.7 -- the aliens; the one player a mine does not stop.
 const PLAYER_ALIEN: int = 255
+## `0x00479330` -- the three unit types `aChangeUnitViewDirection` will not
+## turn.
+const ROTATE_REFUSED_TYPE_LOW: int = 61
+const ROTATE_REFUSED_TYPE_HIGH: int = 63
+## `cmp byte [arg_7ch], 0x18` at `0x00479F4B` -- the Spider, whose voice is
+## fixed rather than drawn.
+const SPIDER_TYPE: int = 24
+## docs/10 section 5.8 -- speech set 12, `spidy`.
+const SPEECH_SPIDY: int = 12
+## `push 1 / push 6` at `0x00479F59` -- `aRandom2(1, 6)`, base and span.
+const SPEECH_BASE: int = 1
+const SPEECH_SPAN: int = 6
 ## docs/23 section 7.5 -- the Jet Pack, `Info.lcl`'s "warp & scan".
 const JET_PACK_EQUIP_ID: int = 7
 ## docs/10 section 5.3 -- `+0x1A..+0x1F`, in the order the record stores them.
@@ -414,47 +426,48 @@ static func free_cell(state: MapState, units: Dictionary, x: int,
 ## `aGenerateUnitElement` (`0x00479CF0`) -- the one routine that puts a unit
 ## into the array at run time, and both of its shapes.
 ##
-## docs/20 section 7.4: `rank * 12` goes into **both** the experience points
-## and the skill-point pool, and an empty name is filled from the unit type's
-## description string.
+## docs/20 section 7.4, in the routine's own order:
 ##
-## `exact` is the engine's own eighth argument, and the two callers differ on
-## it: the LCL spawn commands pass **0** and an occupied target cell then makes
-## the routine search up to eight neighbours, while `0x0046F210`'s `special` 9
-## arm passes **1** and takes the cell or nothing.  Written as one function
-## because it is one routine; the flag is not a remake convenience.
+## 1. **The cell.** `exact` is the engine's own eighth argument and the two
+##    callers differ on it: the LCL spawn commands pass **0**, and then the
+##    target must pass `0x00479C60` ([method WalkMap.is_enterable]: on the
+##    map, empty, enterable, no fire and no mine) or the first of its eight
+##    neighbours in `0x004308C0`'s direction order that does -- diagonals
+##    allowed, `push 1` at `0x00479D56`. `0x0046F210`'s `special` 9 arm passes
+##    **1** and takes the cell or nothing.
+## 2. **The record.** `rank * 12` goes into **both** the experience points and
+##    the skill-point pool, an empty name is filled from the type's
+##    description, and `+0x3F` is the type's default weapon
+##    (`unitinfo[+0x06]`, `0x00479EC4`).
+## 3. **The derived stats.** `0x00479F20` calls `0x004759E0`
+##    ([method Refresh.recompute_full]) on the record before it is inserted:
+##    hit points, movement, fitness, armour and a full magazine. Without it a
+##    spawned alien had `fp == 0`, which [method Allowance.for_unit] reads as
+##    exhaustion -- one field a turn -- and no weapon to strike with.
+## 4. **The voice.** A unit of any player but 255 gets a speech set in
+##    `+0x55`: a fixed 12, `spidy`, for type 24, otherwise `aRandom2(1, 6)`
+##    (`0x00479F49`..`0x00479F6A`). The engine draws from the clock-seeded
+##    stream; *speech* is the deterministic stand-in, as D8 does for a
+##    recruit (docs/92), and may be null only for a caller that spawns for
+##    player 255.
+## 5. **The facing**, after the insert: `0x0047A8E0(x, y, 1)`, the nearest
+##    visible enemy, then mode 2, any enemy, when that finds nobody; a hit is
+##    written through `aChangeUnitViewDirection` (`0x00479FE9`), which the
+##    types [method turns] refuses keep at 0.
 static func generate(state: MapState, units: Dictionary,
-		types: UnitTypeTable, spawn_player: int, type_id: int, name_text: String,
+		types: UnitTypeTable, weapons: WeaponTable, ctrlmap: CtrlMapTable,
+		spawn_player: int, type_id: int, name_text: String,
 		rank: int, pool_flag: int, x: int, y: int,
-		exact: bool) -> UnitState:
-	var tx: int = -1
-	var ty: int = -1
-	if free_cell(state, units, x, y):
-		tx = x
-		ty = y
-	elif not exact:
-		for dy: int in [-1, 0, 1]:
-			for dx: int in [-1, 0, 1]:
-				if dx == 0 and dy == 0:
-					continue
-				if tx < 0 and free_cell(state, units, x + dx, y + dy):
-					tx = x + dx
-					ty = y + dy
-	if tx < 0:
+		exact: bool, ai_level: int, speech: IncRandom) -> UnitState:
+	var target: Vector2i = _spawn_cell(state, units, ctrlmap, x, y, exact)
+	if target.x < 0:
 		return null
 	var unit: UnitState = UnitState.new()
 	unit.slot = free_slot(units)
 	unit.player = spawn_player
 	unit.type_id = type_id
-	unit.x = tx
-	unit.y = ty
-	unit.hp = types.hp_max(type_id)
-	if unit.hp == 0:
-		# `placed` is `hp != 0`, so a type with no row -- or one whose `hp_max`
-		# is 0 -- would be an unplaced slot the moment it is written. One hit
-		# point keeps it a unit; the exact value is for a native capture to
-		# settle, not this model to guess.
-		unit.hp = 1
+	unit.x = target.x
+	unit.y = target.y
 	unit.ep = rank * 12
 	unit.tp = rank * 12
 	unit.pool_flag = pool_flag
@@ -468,11 +481,75 @@ static func generate(state: MapState, units: Dictionary,
 		unit.name = types.description(type_id)
 	else:
 		unit.name = ""
-	unit.turn_start_x = tx
-	unit.turn_start_y = ty
+	unit.weapon = types.default_weapon(type_id)
+	# **A declared divergence: the engine reads uninitialised stack here.** The
+	# record is a local (`[esp+0x18]`) that nothing clears, and `0x004759E0`
+	# asks `aGetMovePoints` (`0x00475160`) for `+0x15` *before* it writes
+	# `+0x19` (`0x00475120`) -- so the movement a spawn starts with depends on
+	# whatever fitness byte the stack held, and a 0 there is exhaustion, one
+	# field. The remake hands the allowance the fitness the same call is about
+	# to write. `+0x41`, the other input nothing writes first, is 0 here.
+	unit.fp = Refresh.max_fp(unit, types, unit.ep)
+	Refresh.recompute_full(unit, types, weapons, units, ai_level)
+	if unit.hp == 0:
+		# `placed` is `hp != 0`, so a type with no row -- or one whose `hp_max`
+		# is 0 -- would be an unplaced slot the moment it is written. One hit
+		# point keeps it a unit; the exact value is for a native capture to
+		# settle, not this model to guess.
+		unit.hp = 1
+	if spawn_player != PLAYER_ALIEN:
+		if type_id == SPIDER_TYPE:
+			unit.speech = SPEECH_SPIDY
+		elif speech != null:
+			unit.speech = speech.draw(SPEECH_BASE, SPEECH_SPAN)
+		else:
+			push_error("generate: player %d needs a speech stream" % spawn_player)
+	unit.turn_start_x = target.x
+	unit.turn_start_y = target.y
 	units[unit.slot] = unit
-	occupy(state, types, unit, tx, ty)
+	occupy(state, types, unit, target.x, target.y)
+	var facing: int = Combat.end_turn_facing(state, units, types, target.x,
+		target.y, Combat.FACING_MODE_VISIBLE_ENEMY)
+	if facing == Combat.FACING_NONE:
+		facing = Combat.end_turn_facing(state, units, types, target.x,
+			target.y, Combat.FACING_MODE_ANY_ENEMY)
+	if facing != Combat.FACING_NONE and turns(type_id):
+		unit.facing = facing
 	return unit
+
+
+## `0x00479330` -- whether `aChangeUnitViewDirection` will turn this type.
+static func turns(type_id: int) -> bool:
+	return type_id < ROTATE_REFUSED_TYPE_LOW or type_id > ROTATE_REFUSED_TYPE_HIGH
+
+
+## Step 1 of [method generate]: the cell it lands on, or `(-1, -1)`.
+##
+## A null *ctrlmap* is a hand-built world with no field table, and every field
+## then counts as enterable.
+static func _spawn_cell(state: MapState, units: Dictionary,
+		ctrlmap: CtrlMapTable, x: int, y: int, exact: bool) -> Vector2i:
+	if exact:
+		return Vector2i(x, y) if free_cell(state, units, x, y) \
+			else Vector2i(-1, -1)
+	if _spawnable(state, units, ctrlmap, x, y):
+		return Vector2i(x, y)
+	for step: Vector2i in Combat.STEP_DIRECTIONS:
+		if _spawnable(state, units, ctrlmap, x + step.x, y + step.y):
+			return Vector2i(x + step.x, y + step.y)
+	return Vector2i(-1, -1)
+
+
+## `0x00479C60(x, y, 0xFFFF)`.
+static func _spawnable(state: MapState, units: Dictionary,
+		ctrlmap: CtrlMapTable, x: int, y: int) -> bool:
+	if ctrlmap != null:
+		return WalkMap.is_enterable(state, ctrlmap, x, y)
+	if not free_cell(state, units, x, y):
+		return false
+	var obstacle: int = state.obstacle_at(state.index_of(x, y))
+	return obstacle != MapState.OBSTACLE_FIRE \
+		and obstacle != MapState.OBSTACLE_MINE
 
 
 ## `aRemoveUnitElement` (`0x004779C0`) -- the one routine that takes a unit off

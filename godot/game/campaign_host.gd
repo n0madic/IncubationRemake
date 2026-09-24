@@ -85,12 +85,11 @@ const CATALOGUE_LOW: int = 0
 ## by any shipped level.
 const CATALOGUE_ID_MAX: Dictionary = {KIND_WEAPONS: 20, KIND_EQUIPMENT: 21}
 
-## `aRandom(1, 6)` -- the recruit's voice. The engine draws it from the
-## `GetTickCount`-seeded stream at `0x004638E0` (docs/28 section 3.2), which
-## never repeats. A campaign save has to reproduce, so this draws from a
-## deterministic stream of its own and the divergence is declared (D8).
-const SPEECH_BASE: int = 1
-const SPEECH_SPAN: int = 6
+## `aRandom(1, 6)` -- the recruit's voice ([constant UnitState.SPEECH_BASE]).
+## The engine draws it from the `GetTickCount`-seeded stream at `0x004638E0`
+## (docs/28 section 3.2), which never repeats. A campaign save has to
+## reproduce, so this draws from a deterministic stream of its own and the
+## divergence is declared (D8).
 
 ## The gate `0x00456FC0(-1)` reads the mission id and picks a sequence
 ## (docs/27 section 2.3, docs/41 section 5): id 1 with the intro flag plays
@@ -293,7 +292,7 @@ func _seed_names() -> PackedStringArray:
 
 ## `aRandom(1, 6)` -- base and **span**, so the result is 1..6.
 func _draw_speech() -> int:
-	return _rng.draw(SPEECH_BASE, SPEECH_SPAN)
+	return _rng.draw(UnitState.SPEECH_BASE, UnitState.SPEECH_SPAN)
 
 
 func _weapon_zero_cost() -> int:

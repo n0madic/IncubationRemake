@@ -35,7 +35,10 @@ maps the cache has — each with:
 * the **parsed script**, so the GDScript side reads the same instruction stream
   Python did rather than re-parsing anything;
 * the **world it ran on**: the four cell arrays, the unit roster and the balance
-  rows the script can reference;
+  rows the script can reference -- since schema `/2` (2026-09-24) also each
+  type's default weapon, the weapons' magazines and the control-map delays,
+  because a spawn fills its magazine and tests the field it lands on
+  (`docs/20` §7.4);
 * the mission's authored `next_map`, which `LclWorld` starts from and which a
   replay beginning at `""` would disagree with on every case that does not call
   `EnterNameOfNextMap`;

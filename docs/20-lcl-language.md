@@ -862,8 +862,13 @@ jumps into the normal arm below 3 rather than testing separately.
 
 `0x00479cf0(player, type, name, rank, arg5, x, y, exact=0, &outIndex)`:
 
-* with `exact == 0` — which is what both LCL commands pass — if the target cell
-  is not free it searches up to **8 neighbouring cells** for a free one;
+* with `exact == 0` — which is what both LCL commands pass — the target cell
+  must pass `0x00479C60(x, y, 0xFFFF)`: on the map, no unit, a field whose
+  delay is not 255, and `+0x10` neither 1 (fire) nor 2 (a mine). Otherwise the
+  routine tries the **8 neighbouring cells** in `0x004308C0`'s direction
+  order — `(0,+1)`, `(−1,0)`, `(0,−1)`, `(+1,0)`, then the diagonals
+  (`push 1` at `0x00479D56`) — and takes the first that passes. With
+  `exact != 0` neither test is made;
 * if `name` is `""` the unit's name is taken from the unit type's description
   string (`SetUnitInfo` argument 2) — which is why every shipped `InsertUnit`
   passes `""`;
@@ -876,8 +881,28 @@ jumps into the normal arm below 3 rather than testing separately.
   ("copy the attacked unit into the unit pool if its unit-pool flag is set",
   `0x0046f7e0`) and the two capture paths `0x00478f20` and `0x00463380` test
   before calling `0x00478c10`;
-* the unit's weapon is the type's default weapon and its ammo is that weapon's
-  magazine size.
+* `+0x3F` is the type's default weapon (`unitinfo[+0x06]`, `0x00479EC4`), and
+  then `0x00479F20` calls `0x004759E0`, the **full** derived-stat rewrite:
+  hit points to their ceiling, movement, fitness, armour and the weapon's
+  magazine. A remake that set only the weapon and the magazine — this
+  document's reading until 2026-09-24 — spawns every alien with fitness 0,
+  which the allowance reads as exhaustion: `_C_168`'s waves crawled one field
+  a turn and never struck. **`0x004759E0` asks `aGetMovePoints` for `+0x15`
+  before it writes `+0x19`**, and the record is a stack local nothing clears,
+  so the first allowance reads an uninitialised fitness byte (and `+0x41`).
+  That is an engine bug; the remake supplies the fitness the same call writes
+  a moment later;
+* after the rewrite, a unit of any player but 255 gets a voice in `+0x55`:
+  a fixed **12** (`spidy`) for type 24, otherwise `aRandom2(1, 6)`
+  (`0x00479F49`..`0x00479F6A`) — the clock-seeded stream, for which the remake
+  keeps a deterministic stand-in as it does for a recruit (`92` D8). Every
+  shipped `InsertUnit` and `InsertUnitWithGroup` is player 255's, so no script
+  reaches the draw;
+* after the insert, `0x0047A8E0(x, y, 1)` — the nearest **visible** enemy
+  ([`23` §3.6](23-ai-system.md)) — and, when that finds nobody, mode 2, any
+  enemy; a hit is written through `aChangeUnitViewDirection` `0x004792A0`,
+  which leaves types 61..63 unturned. So a spawned unit faces the enemy, not
+  facing 0.
 
 Corpus values agree: argument 1 is always `255` (computer) in `InsertUnit` and
 `0` in `InsertUnitWithGroup (0,21,"Dr.Reich",…)`; argument 4 ∈ {0,1,2,4,255}

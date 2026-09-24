@@ -43,7 +43,7 @@ from . import combat as combatmod
 from . import ctrlmap as ctrlmapmod
 from . import interact as interactmod
 from . import lev as levmod
-from .info import BalanceTables
+from .info import DELAY_IMPASSABLE, BalanceTables
 from .rng import ARandom, CRandom
 
 LOG = logging.getLogger("lcl.runtime")
@@ -76,6 +76,13 @@ MISSION_CALL_TYPES = (CALL_NEXT_PLAYER, CALL_MOVE_UNIT, CALL_ATTACK,
 #: player argument; ``UnitOnField``/``MechOnField`` also accept 254 for "any".
 PLAYER_COMPUTER = 255
 PLAYER_ANY = 254
+#: ``cmp byte [arg_7ch], 0x18`` at ``0x00479F4B`` -- the Spider's voice is
+#: fixed, speech set 12 (``spidy``, ``docs/10`` §5.8), rather than drawn.
+SPIDER_TYPE = 24
+SPEECH_SPIDY = 12
+#: ``push 1 / push 6`` at ``0x00479F59`` -- ``aRandom2(1, 6)``.
+SPEECH_BASE = 1
+SPEECH_SPAN = 6
 
 #: ``docs/20`` §7.4 -- species 2 is an object and 3 a machine; ``UnitOnField``
 #: excludes both and ``MechOnField`` requires the second.
@@ -275,6 +282,10 @@ class LclWorld:
         self.hero_killed = [0, 0, 0, 0]
         self.turn_control = 0
         self.rng = ARandom(seed)
+        #: The voice a spawn for a player other than 255 draws -- see
+        #: :meth:`spawn`.  Not the game's stream, so it moves no seed a case
+        #: compares.
+        self.speech = ARandom(1.0)
         #: ``docs/20`` §7.4 -- ``InsertUnit`` draws from the C runtime's
         #: generator, not from ``aRandom``.  Keeping them separate is the point.
         self.crand = CRandom()
@@ -383,23 +394,24 @@ class LclWorld:
               pool_flag: int, x: int, y: int) -> RuntimeUnit | None:
         """``0x00479cf0`` with ``exact == 0`` -- the form both LCL commands use.
 
-        ``docs/20`` §7.4: an occupied target cell makes it search up to eight
-        neighbours, ``rank * 12`` goes into **both** the experience points and
-        the skill-point pool, and an empty name is filled from the unit type's
-        description string.
+        ``docs/20`` §7.4, reduced to the columns this model carries: the cell
+        is the target when ``0x00479C60`` accepts it, else the first of its
+        eight neighbours in ``0x004308C0``'s direction order that does;
+        ``rank * 12`` goes into **both** the experience points and the
+        skill-point pool; an empty name is filled from the unit type's
+        description string; the full recompute ``0x004759E0`` then fills the
+        hit points to their ceiling and the magazine of the type's default
+        weapon; and a unit of any player but 255 gets a voice -- 12 for the
+        Spider, otherwise a draw from :attr:`speech`, the deterministic
+        stand-in for the engine's clock-seeded ``aRandom2`` (``docs/92`` D8).
         """
         target = None
-        if self.free_cell(x, y):
+        if self.spawnable(x, y):
             target = (x, y)
         else:
-            for dy in (-1, 0, 1):
-                for dx in (-1, 0, 1):
-                    if dx == 0 and dy == 0:
-                        continue
-                    if self.free_cell(x + dx, y + dy):
-                        target = (x + dx, y + dy)
-                        break
-                if target is not None:
+            for dx, dy in combatmod.STEP_DIRECTIONS:
+                if self.spawnable(x + dx, y + dy):
+                    target = (x + dx, y + dy)
                     break
         if target is None:
             return None
@@ -407,19 +419,42 @@ class LclWorld:
         row = self.tables.units.get(type_id)
         unit = RuntimeUnit(
             slot=slot, player=player, type_id=type_id, x=target[0],
-            y=target[1], hit_points=0 if row is None else row.hp_max,
-            ep=rank * 12, tp=rank * 12, pool_flag=pool_flag,
+            y=target[1], hit_points=0, ep=rank * 12, tp=rank * 12,
+            pool_flag=pool_flag,
             name=name or ("" if row is None else row.description))
+        if row is not None:
+            base = row.hp_max
+            unit.hit_points = base if player == PLAYER_COMPUTER else min(
+                interactmod.MAX_HIT_POINTS_CAP,
+                base + unit.ep // interactmod.EXPERIENCE_PER_HIT_POINT)
+            weapon = self.tables.weapons.get(row.weapon)
+            unit.ammo = 0 if weapon is None else weapon.mun
         if unit.hit_points == 0:
             # `placed` is `hp != 0`, so a type with no row -- or one whose
             # `hp_max` is 0 -- would be an unplaced slot the moment it is
             # written.  One hit point keeps it a unit; the exact value is for
             # the native capture to settle, not this model to guess.
             unit.hit_points = 1
+        if player != PLAYER_COMPUTER:
+            unit.speech = (SPEECH_SPIDY if type_id == SPIDER_TYPE
+                           else self.speech(SPEECH_BASE, SPEECH_SPAN))
         self.units[slot] = unit
         for at in self.footprint(unit, *target):
             self.unit_at[at] = slot
         return unit
+
+    def spawnable(self, x: int, y: int) -> bool:
+        """``0x00479C60(x, y, 0xFFFF)``: on the map, no unit, an enterable
+        field, and neither fire nor a mine."""
+        if not self.in_bounds(x, y):
+            return False
+        at = self.index(x, y)
+        if self.unit_at[at] != -1:
+            return False
+        if self.tables.delay(self.ctrl_type[at]) == DELAY_IMPASSABLE:
+            return False
+        return self.effect_state[at] not in (ctrlmapmod.OBSTACLE_FIRE,
+                                             ctrlmapmod.OBSTACLE_MINE)
 
     def free_slot(self) -> int:
         """The lowest slot in 0..199 that holds no **live** unit.

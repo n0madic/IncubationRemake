@@ -42,6 +42,14 @@ var footprints: Dictionary[int, PackedInt32Array] = {}
 ## `0x0042F6B0` makes. Null for a hand-built context, and then only a wall
 ## refuses ([method enterable]).
 var ctrlmap: CtrlMapTable = null
+## The weapon table a spawn's full recompute reads its magazine from
+## ([method UnitState.generate]). Empty for a hand-built context, and then a
+## spawned unit's magazine is 0.
+var weapons: WeaponTable = WeaponTable.new()
+## The deterministic stand-in for `aRandom2` a spawn for a player other than
+## 255 draws its voice from (docs/92 D8). [World] hands its own over; a
+## hand-built context gets a fresh one.
+var speech: IncRandom = null
 
 
 static func create(map_state: MapState, unit_map: Dictionary,
@@ -58,6 +66,8 @@ static func create(map_state: MapState, unit_map: Dictionary,
 	context.crand = c_random
 	context.player = host_player
 	context.next_map = map_name
+	context.speech = IncRandom.new()
+	context.speech.randomize_seed(1.0)
 	return context
 
 
@@ -157,5 +167,6 @@ func cells_with_actpt(low: int, high: int) -> PackedInt32Array:
 ## same spawn, and nothing downstream would have said so.
 func spawn(spawn_player: int, type_id: int, name: String, rank: int,
 		pool_flag: int, x: int, y: int) -> UnitState:
-	return UnitState.generate(state, units, types, spawn_player, type_id, name,
-		rank, pool_flag, x, y, false)
+	return UnitState.generate(state, units, types, weapons, ctrlmap,
+		spawn_player, type_id, name, rank, pool_flag, x, y, false,
+		turn.ai_level, speech)
