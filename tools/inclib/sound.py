@@ -318,6 +318,9 @@ LOOPING_LOADS: tuple[int, ...] = (
     0x00410E55,                        # Bridge
     0x004125FD, 0x00412643,            # aPlayElevatorSequence
     0x00412A30, 0x00412A76,            # aPlayPlatformSequence
+    # TODO: 0x00413AB3 (stonefire.wav) is played once at 0x00413EE7 (push 0),
+    # not by the looping 0x00413BD1 -- docs/28 section 12 item 6. Dropping it
+    # changes the emitted sound.json: bump CONVERTER_VERSION and republish.
     0x00413A6D, 0x00413AB3,            # aPlayRotateStatueSequence
     0x00414386,                        # the land mover
     0x00415EBE,                        # the bomber

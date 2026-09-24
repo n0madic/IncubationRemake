@@ -564,13 +564,19 @@ static func enqueue(queue: SequenceQueue, host: ShotHost, kind: String,
 						var eye: Vector3i = host.camera_eye()
 						var _f: int = host.fly(
 							Vector3i(eye.x, eye.y, STATUE_HEIGHT), centre))
-			# The beam and the pool below are the same routine's, so the
-			# motion stage holds its sound rather than ending it
-			# (docs/28 section 1.4).
-			queue.enqueue(kind, frames, paint, cues, true)
+			# **Two sounds, two phases** (`0x00413A40`'s listing):
+			# `stone.wav` starts looping after the flight (`0x00413BD1`,
+			# `push 1`) and is killed once the beam is drawn (`0x00413EBD`);
+			# `stonefire.wav` starts there, once (`0x00413EE7`, `push 0`), and
+			# is killed when the pool drains (`0x00413F22`). Both were queued
+			# on the turn and cut with the beam's frame, so the fire was never
+			# heard. The cues come in load order -- the grind, then the fire.
+			var grind: Array[Dictionary] = cues.slice(0, 1)
+			var fire: Array[Dictionary] = cues.slice(1)
+			queue.enqueue(kind, frames, paint, grind)
 			queue.enqueue(STAGE_BEAM, 1,
 				func(_frame: int, _total: int) -> void:
-					_statue_beam(host, cell, extra))
+					_statue_beam(host, cell, extra), fire, true)
 			queue.enqueue_until(STAGE_POOL, POOL_WAIT_FRAMES,
 				func() -> bool: return host.pool_live() == 0)
 			return frames + 1

@@ -501,8 +501,11 @@ func _check_routine_sounds(h: TestHarness) -> void:
 			"extra": {"cells": [[7, 2]]}, "wave": "crushwall.wav"},
 		{"kind": "ground_fire", "frames": SetpieceDriver.POOL_ONLY_FRAMES,
 			"extra": {"killed": []}, "wave": "gfire.wav"},
-		{"kind": "statue", "frames": SetpieceDriver.STATUE_TURN_FRAMES,
-			"extra": {"killed": [], "beams": []}, "wave": "stone.wav"},
+		# The rotating statue is not a row: its grind ends with the turn by
+		# the listing (`camera.statue.sounds_by_phase`). The fixed one's fire
+		# is the statue sound that runs to the end.
+		{"kind": "fixed_statue", "frames": 1,
+			"extra": {"killed": [], "beams": []}, "wave": "stonefire.wav"},
 		{"kind": "barrier_on", "frames": SetpieceDriver.POOL_ONLY_FRAMES,
 			"extra": {"direction": 0, "cells": 3, "killed": []},
 			"wave": "lbarrier.wav"},
@@ -4603,6 +4606,25 @@ func _check_setpiece_camera(h: TestHarness) -> void:
 		"%s:3,3,3,0,3" % BlobPrograms.STATUE_BEAM])
 	h.equal("camera.statue.hides_the_victim", statue.hidden,
 		PackedInt32Array([4]))
+	# Its two sounds in their own phases: the grind on the turn, ended with
+	# it; the fire from the beam, held until the pool drains.
+	var sounded: SequenceQueue = SequenceQueue.create(null)
+	var two: Array[Dictionary] = [{"wave": "stone.wav"}, {"wave": "stonefire.wav"}]
+	var _sounded: int = SetpieceCamera.enqueue(sounded, RecordingHost.new(),
+		"statue", SetpieceDriver.STATUE_TURN_FRAMES, Vector2i(3, 3), 0, 0, -1,
+		statue_extra, paint, two)
+	var phases: Array = []
+	for step: SequenceQueue.Step in sounded._steps:
+		var waves: Array = []
+		for cue: Dictionary in step.cues:
+			waves.append(cue["wave"])
+		phases.append([step.name, waves, step.holds_sound])
+	h.equal("camera.statue.sounds_by_phase", phases, [
+		[SetpieceCamera.STAGE_FLIGHT, [], false],
+		["statue", ["stone.wav"], false],
+		[SetpieceCamera.STAGE_BEAM, ["stonefire.wav"], true],
+		[SetpieceCamera.STAGE_POOL, [], false]],
+		"`0x00413BD1` then `0x00413EBD` kills it and `0x00413EE7` plays the fire")
 
 	# `FallingSpores`' drop `0x00414550`: inserted high under a heading from
 	# the effect stream, lowered 1600 then 480 more a frame onto the marker,
