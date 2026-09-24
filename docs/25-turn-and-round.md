@@ -816,7 +816,9 @@ it covers.
 
 ## 11. Open questions
 
-1. **Mode 4, `pbm session`, is named but not reachable in this build.** The
+1. ~~**Mode 4, `pbm session`, is named but not reachable in this build.**~~
+   **Closed by decision, 2026-09-24** — out of scope, for the reason the item
+   records. The
    binary's own word for it is recovered (§2) and the play-by-mail passwords are
    in the save format ([`11` §5.3](11-save-game-format.md)), but all three sites
    that could select it push a register. Whether a menu path reaches it, or
@@ -828,8 +830,9 @@ it covers.
    depends on it: mode 4 changes only the skip rule's gate (§3.1) and the
    equipment-point split (§4.1), and a campaign reaches neither.
 
-2. **`0x0043B270`, the flag that switches the equipment-point hand-out to
-   floating point.** Its setter has three call sites, all in `aMenuSystem.cpp`'s
+2. ~~**`0x0043B270`, the flag that switches the equipment-point hand-out to
+   floating point.**~~ **Closed by decision, 2026-09-24** — out of scope, for the reason the item
+   records. Its setter has three call sites, all in `aMenuSystem.cpp`'s
    session setup, two of them passing a register; it has eleven readers. It is a
    multiplayer session option, and the campaign reaches neither arm of the
    hand-out, so what it is called and what the player sets it to belong to
@@ -856,5 +859,5 @@ it covers.
 The ViewPlayer block is **not** listed here. §10's sweep partitions it and the
 result is tabulated where it belongs, in
 [`11` §5.6](11-save-game-format.md) — fourteen fields at the front, four at the
-back, and 1024 bytes reached only through a base register. That residue stays
-[`11`](11-save-game-format.md)'s open item, not a second copy of it here.
+back, and 1024 bytes reached only through a base register — since closed there
+as the loaded `vp.pal`.

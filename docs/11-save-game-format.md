@@ -184,7 +184,10 @@ Two loose ends, recorded as observed rather than explained:
   `0x0050D7F8`. Its only caller is `0x00419E75`, in the same block as three of
   the five `aSaveGame` call sites. Slot 32 is therefore an internal staging
   slot rather than a player-visible one, but the code carries no name for it,
-  so it is left at that. **UNVERIFIED.**
+  so it is left at that. *(Named since: slot 32 is the interface's **Remind
+  position** / **Recall position** pair, F1/F2 — [`43` §5](43-battle-hud.md),
+  events 8 and 7 through `0x0041DA20` commands 5 and 6 — so deleting it
+  forgets the remembered position. Open question 3 below.)*
 
   Two runs of a campaign mission corroborate the shape without naming it: the
   game wrote `_31_.sav` by itself as the mission started and `_33_.sav` later,
@@ -754,7 +757,7 @@ committed and records what each one pins, with digests.
    with index 255 overridden at run time. The block is presentation state from
    end to end and a remake reuses none of it.
 
-2. **Five GameControl offsets** (§5.2, down from eleven — [`25`](25-turn-and-round.md)
+2. ~~**Five GameControl offsets** (§5.2, down from eleven — [`25`](25-turn-and-round.md)
    closed the turn counter, the player kinds, the player names, the equipment
    points, the commendations, the solo flag and the LCL slot array, and a real
    save identified `+0x0000` as the mission name, and [`27` §1](27-campaign.md)
@@ -764,22 +767,35 @@ committed and records what each one pins, with digests.
    literal, so nothing in the binary distinguishes them. Sample saves now give
    the first two groups a value distribution but not a meaning; the
    MissionObjectives block is all-zero in a campaign save and can only move on a
-   multiplayer one.
+   multiplayer one.~~ **Closed by decision, 2026-09-24:** not work the remake
+   plans. Legacy multiplayer and play-by-mail are out of scope
+   ([`92` §7.9](92-remake-architecture.md)), and the remake does not load the
+   retail game's saves — `SaveCodec` writes its own format — so these offsets
+   are carried by nothing and consumed by nothing. They stay a recorded fact
+   about the binary, with the value distributions above.
 
-3. **Slot 32** (§4) — *narrowed 2026-09-04.* Deleted by name from one call
+3. ~~**Slot 32** (§4) — *narrowed 2026-09-04.* Deleted by name from one call
    site; no code names it. Slot 31 is now settled: it is the **mission-entry
    snapshot**, which §5.7 read correctly and [`27` §3.5](27-campaign.md) has
    been corrected to agree with (`_31_.sav` carries the squad in both pool
    rows, `_6_`/`_33_` carry it in row 1 alone). What remains open is 32 and 33
    only. A
    real run shows the game writing slots 31 and 33 by itself, so the three form
-   one internal group — which of them is which is still open.
+   one internal group — which of them is which is still open.~~ **Closed** —
+   by the interface, not by the save code: [`43` §5](43-battle-hud.md) reads
+   the left button column's events, and slot 32 is *Remind position* /
+   *Recall position* (events 8 and 7, `0x0041DA20` commands 5 and 6), 33 is
+   *Undo last turn* (event 15, command 7) and 31 is *Undo mission* (event 16,
+   command 8). `0x00448A50`'s hard-coded delete therefore forgets the
+   remembered position; the remake's `HudTables.SLOT_REMIND`,
+   `SLOT_UNDO_TURN` and `SLOT_UNDO_MISSION` carry the same numbers.
 
-4. **`0x00509A40`'s second consumer.** The `Saves2` flag is read only by
+4. ~~**`0x00509A40`'s second consumer.**~~ **Closed** — enumerated: there is
+   none. The `Saves2` flag is read only by
    `aBuildSaveName`. If a second installed copy was meant to share anything
    else, no trace of it survives.
 
-Item 1 closed once a sample existed. Items 2 and 3 are narrowed by the same
-sample but not settled: what remains needs either a multiplayer save or a name
-the binaries do not contain. Item 4 is closed in the sense that it has been
-enumerated — there is no second consumer.
+Item 1 closed once a sample existed. Item 2 is closed by decision (it needed
+a multiplayer save, and multiplayer is out of scope), item 3 by the interface's
+own events, and item 4 by enumeration — there is no second consumer. Nothing
+in this document is open.
