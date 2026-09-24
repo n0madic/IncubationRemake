@@ -244,18 +244,6 @@ func _inputs_of(document: Dictionary) -> BlobPrograms.Inputs:
 	return inputs
 
 
-## The one static variable in the project, and the reason for the
-## `@static_unload` at the top of this file.
-##
-## A script that declares a `static var` is **kept loaded for the life of the
-## process** unless it is annotated, and a kept script keeps every script it
-## names -- which from here is nearly the whole of `core/` and `game/`. In an
-## exported build that came out at the end as
-## `ERROR: 103 resources still in use at exit`, 103 being the transitive
-## closure of this file. The editor's own teardown does not report it, so the
-## one line of evidence was a build nothing gated on.
-
-
 ## The engine's tables, read once per run and **held on the suite** rather
 ## than statically.
 ##

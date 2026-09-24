@@ -631,3 +631,67 @@ Incubation.exe` just as hard.
   observed to leave a live `Incubation.exe` window at 640×480 after the three
   direct-save pokes; launching `explorer` with `dbgcall.exe` as its direct
   target was not a valid control because its command line was lost.
+
+## The gold tools
+
+Six "gold" tools drive `dbgcall` to capture oracles. All are **outside**
+`make test`: each needs Wine plus a **copy** of the game (they refuse a game
+directory inside this repository), and each `--check` fails without a capture.
+
+| Tool | Subject | Capture |
+|---|---|---|
+| `movemap_gold.py` | the fill, the ladder, the allowance, the path walk | `--game-copy` + `_6_.sav` staged as `Work/Saves2/` |
+| `turn_gold.py` | the hand-over, line of sight, hit probability, interaction | imports `run_plan` from `movemap_gold` — same session |
+| `ai_gold.py` | a whole computer turn on `_C_140` | **must not use `--code`** (see below) |
+| `blob_gold.py` | the effect pool's creators and all 74 update arms | one creator per plan; `--probe-startup N` reports reachability |
+| `presentation_gold.py` | the death, idle, unit-animation and set-piece creators; the jump scream's draw and the frame limiter's epoch rule | one process per phase; the last two need no save |
+| `hud_probe.py` | the ground overlay `fcn.00417E70`, blitted into a private surface | the camera must be placed first, or every projection clips out |
+
+Operational rules for the gold captures; each has cost a re-run:
+
+- **Wine start-up on this host is intermittent** ([`docs/91` §1](../../docs/91-wine-runtime-probes.md)):
+  a phase may reach the anchor on attempt 1 or on attempt 8, and one that never
+  does is an environment result, not a failure. **Do not lower `--attempts`** to
+  bound a run — bound the whole invocation with `timeout` instead. Phases are
+  written as they land and merged on re-run.
+  **A probe is not a verdict on the run**: start-up success comes and goes
+  within minutes, so a probe that lands nothing says nothing about the capture
+  started after it. Start the capture anyway and let its own retry loop decide.
+- **`--code` makes `Incubation.exe` fault before the anchor on this host.** Where
+  a capture needs to write a byte, use the game's own imported `memcpy`
+  (`movemap_gold.MEMCPY_DECL`, shared by all the gold tools) with a plain
+  `--blob`.
+- **A phase with no records is not always a refusal.** An argument the capture
+  filled wrongly produces a faithful zero that verifies nothing. The tools pin
+  what a capture does not reach (`NATIVE_FAULTS`, `PROGRAM_ARGS_STALE`,
+  `BURST_UNCAPTURED`, `COVERAGE_UNCOVERED`, `PROGRAM_DIVERGENT`,
+  `*_UNCAPTURED`) so a thinner capture fails rather than reporting less.
+- **And a stored argument the tools have since corrected is not always a lost
+  phase.** When the corrected part is a stack slot the callee's body never
+  loads, the phase in hand is already the engine's answer to the right call
+  (`docs/97` §14.5.1). Read the callee's frame before writing a phase off.
+- **A transcription with no capture still has an oracle**, and it needs no
+  Wine: `blob_tables.creators.shape_matches_call_sites` runs every program in
+  `inclib/blob_creators.py` on synthetic inputs and requires each record to
+  match a constructor call site of its own creator -- class, kind, literal
+  lifetime, model, sprite row/column/size -- with `shape_reaches_call_sites`
+  requiring the converse. It is a second reading of the same binary and it
+  catches a fifteen-push argument list reversed one slot out, which is the
+  slip that shape of transcription actually makes.
+- **A phase's stored arguments are its identity, not its name.** When a
+  creator's arguments are corrected, every phase built on them — *tick* phases
+  included — answers for a call the tools no longer make. Compare what the
+  phase stored against what this run would pass, as `state` and `models` do,
+  and re-take what differs. Emitted fixtures go stale the same way: re-emit
+  `cases_blob.json` when an arm moves, or the Godot suite asserts the old
+  counts and passes.
+- **A `--buf` declared once is one buffer for the whole plan.** Every call
+  after the first reads what the last one left in it, so a replay that zeroes
+  its own copy between calls -- or after an answer the engine writes back
+  into the buffer -- manufactures a disagreement the engine never had
+  (`docs/95` §9 item 2). Carry the model's accumulator the way the plan does,
+  or re-declare the buffer in the plan where a reset is wanted.
+- **A failure entry that is never cleared reads as a missing phase.** A
+  capture that records a `CaptureError` must pop it when the phase later
+  lands, or `NATIVE_FAULTS` names a plan as unlanded beside its own answer. If
+  a pin says a phase is missing, check the phase before believing it.
