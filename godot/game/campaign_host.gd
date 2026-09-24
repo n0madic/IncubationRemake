@@ -67,6 +67,14 @@ const KIND_EQUIPMENT: String = "equipment"
 ## catalogue builders filter on; the high end is the tech level. See
 ## [method catalogue].
 const CATALOGUE_LOW: int = 0
+
+## The tech level `Info.lcl` gives the rows no soldier may carry -- the
+## Combot's gun (12) and `Explosives` (17). No shipped header sets a level
+## above 12, so the engine never sells them, and its model selector names **no
+## body** for a soldier holding either (types 0 and 23 answer null): bought
+## anyway, the Upgrade screen's turntable is left empty. The `ammo` cheat's
+## armoury lifts the base's band but stops short of this.
+const TECH_NEVER_SOLD: int = 99
 ## The first id **past** the catalogue, per half.
 ##
 ## **This is the exclusion that keeps the aliens out of the shop**, and it is
@@ -973,8 +981,9 @@ func catalogue(kind: String) -> Dictionary:
 	var available: Array[Dictionary] = []
 	var locked: Array[Dictionary] = []
 	var band: Vector2i = catalogue_band()
-	# The `ammo` cheat's armoury stocks every weapon the shop can list at all:
-	# the tech band is lifted, the name and id-bound filters are not.
+	# The `ammo` cheat's armoury stocks every weapon a soldier can carry: the
+	# tech band is lifted, the name and id-bound filters and the tech-99 rows
+	# are not ([constant TECH_NEVER_SOLD]).
 	var open_all: bool = kind == KIND_WEAPONS and Cheats.armoury(cheats)
 	for entry: Variant in DictRead.as_array(_balance.get(kind, [])):
 		var row: Dictionary = entry
@@ -984,7 +993,8 @@ func catalogue(kind: String) -> Dictionary:
 				CATALOGUE_ID_MAX.get(kind, 0)):
 			continue
 		var needs: int = DictRead.as_int(row.get("tech", 0))
-		if open_all or (needs >= band.x and needs <= band.y):
+		if (open_all and needs < TECH_NEVER_SOLD) \
+				or (needs >= band.x and needs <= band.y):
 			available.append(row)
 		else:
 			locked.append(row)

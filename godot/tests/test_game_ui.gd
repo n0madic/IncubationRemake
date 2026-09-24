@@ -4212,8 +4212,17 @@ func _armoury(h: TestHarness, host: CampaignHost) -> void:
 	var weapons: Dictionary = host.catalogue(CampaignHost.KIND_WEAPONS)
 	h.equal("cheats.armoury_sells_every_weapon",
 		[weapons_shut, DictRead.as_array(weapons["available"]).size(),
-		DictRead.as_array(weapons["locked"]).size()], [1, 18, 0],
-		"base 5 stocks one weapon; the armoury the 18 the two halves hold")
+		DictRead.as_array(weapons["locked"]).size()], [1, 16, 2],
+		"base 5 stocks one weapon; the armoury all 18 but the two tech-99 rows")
+	# Every weapon the armoury sells has a body for a soldier to hold it:
+	# the tech-99 rows have none, and the Upgrade screen's turntable empties.
+	var bodiless: PackedInt32Array = PackedInt32Array()
+	for entry: Variant in DictRead.as_array(weapons["available"]):
+		var sold: Dictionary = entry
+		if DictRead.as_int(sold["tech"]) >= CampaignHost.TECH_NEVER_SOLD:
+			bodiless.append(DictRead.as_int(sold["id"]))
+	h.equal("cheats.armoury_sells_no_bodiless_weapon", bodiless,
+		PackedInt32Array(), "Combot Weapon (12) and Explosives (17) stay out")
 	h.equal("cheats.armoury_leaves_equipment_alone",
 		DictRead.as_array(
 			host.catalogue(CampaignHost.KIND_EQUIPMENT)["available"]).size(),
