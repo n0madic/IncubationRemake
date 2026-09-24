@@ -2243,8 +2243,12 @@ store lands on.
    imports the nine `winmm` entry points from `audio.dll`, which is the shim
    built with `Arack`, and nothing in the tree imports the `Track` build. Eleven
    checks.
-6. **`stonefire.wav` is listed as looping, and is not** *(opened
-   2026-09-24)*. `blob_tables.py`'s derivation of §1.4 pairs each load with
+6. ~~**`stonefire.wav` is listed as looping, and is not.**~~ **Closed**
+   *(opened and closed 2026-09-24)*: `sound.LOAD_PLAYS` pairs the load with
+   `0x00413EE7`, `LOOPING_LOADS` holds twelve loads, the converter's
+   `tables/sound.json` says `"loop": false` for the fire from 0.46.0, and
+   `blob_tables.py`'s `sound.load_plays_are_later_plays` pins the override.
+   What was found: `blob_tables.py`'s derivation of §1.4 pairs each load with
    the **next** play site in address order, and `aPlayRotateStatueSequence`
    loads both of its waves ahead of its first play: `stone.wav`
    (`0x00413A6D`) is played looping at `0x00413BD1` (`push 1`) and killed at
@@ -2255,9 +2259,7 @@ store lands on.
    looping **play** sites stay nine. The remake's statue already plays the two
    in their phases from the cue order (`SetpieceCamera`, `camera.statue.
    sounds_by_phase`); the flag only decides whether the fire repeats before
-   the pool drains. Correcting the table changes the emitted document, so it
-   waits for a republish that has the Russian pack's sources at hand
-   (`CONVERTER_VERSION` in both places).
+   the pool drains.
 
 ## 13. What the fifth slice added here
 

@@ -308,7 +308,7 @@ COMPUTED_SITES: dict[int, str] = {
     0x0040E871: "footstep",
 }
 
-#: The load sites whose sequence plays ``DSBPLAY_LOOPING``.  Thirteen loads
+#: The load sites whose sequence plays ``DSBPLAY_LOOPING``.  Twelve loads
 #: reach the **nine** looping play sites of section 1.4, because several
 #: routines load one of two alternative waves and then share one play call;
 #: ``blob_tables.py`` derives the same set from ``PLAY_SITES`` and compares.
@@ -318,16 +318,23 @@ LOOPING_LOADS: tuple[int, ...] = (
     0x00410E55,                        # Bridge
     0x004125FD, 0x00412643,            # aPlayElevatorSequence
     0x00412A30, 0x00412A76,            # aPlayPlatformSequence
-    # TODO: 0x00413AB3 (stonefire.wav) is played once at 0x00413EE7 (push 0),
-    # not by the looping 0x00413BD1 -- docs/28 section 12 item 6. Dropping it
-    # changes the emitted sound.json: bump CONVERTER_VERSION and republish.
-    0x00413A6D, 0x00413AB3,            # aPlayRotateStatueSequence
+    0x00413A6D,                        # aPlayRotateStatueSequence
     0x00414386,                        # the land mover
     0x00415EBE,                        # the bomber
     0x0041648F,                        # the teleporter effect
 )
 #: How many distinct play sites those loads reach (docs/28 section 1.4).
 LOOPING_PLAY_SITES = 9
+
+#: The loads that are **not** played by the next play site in address order,
+#: with the one that plays them. `aPlayRotateStatueSequence` loads both of its
+#: waves before its first play: `stone.wav` goes to the looping `0x00413BD1`,
+#: but `stonefire.wav` waits for the beam and `0x00413EE7`'s `push 0` -- once
+#: (docs/28 section 1.4 and section 12 item 6). The buffer each play pushes
+#: is the stack slot its load wrote, which is how the pairing was read.
+LOAD_PLAYS: dict[int, int] = {
+    0x00413AB3: 0x00413EE7,
+}
 
 
 @dataclass(frozen=True)

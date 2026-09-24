@@ -96,7 +96,7 @@ What it holds, and what pins it:
 | `att = base + 20·percent − 2000`, clipped at 0, silence below −2000 | the four constants at their own sites, swept over 26 base volumes × 7 percentages |
 | 103 `SetVolumeCtrl` ids, seven of them not 100 % | `Info.lcl`, read by `blob_tables.py` and compared id by id |
 | The 62 call sites partitioned into 43 remake events | every site's owning routine, bounded by the nearest call entry |
-| Nine looping play sites, reached by thirteen loads | **derived** from `PLAY_SITES`, not pinned separately |
+| Nine looping play sites, reached by twelve loads (thirteen until 2026-09-24: `stonefire.wav` was paired with the wrong play, [`28` §12 item 6](28-effects-and-sound.md)) | **derived** from `PLAY_SITES`, not pinned separately |
 | The weapon's own fire sound, scaled by its **own id** | 42 `SetWeaponInfo2` rows, 41 of which resolve |
 | Two voice cursors, `SP_HUM_*` sharing the human one | the nine voice arms and their two cursor addresses |
 | Eight footstep arms over 69 unit types, 39 silent | the 69-entry index table and its jump table |

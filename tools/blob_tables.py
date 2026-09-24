@@ -6883,15 +6883,27 @@ def _sound_model_checks(ck: "Checker", b: Binary, c: Corpus) -> None:
 
     # ---- 1.4: which loads loop, derived from the play sites
     plays = sorted(PLAY_SITES)
+
+    def played_by(load: int) -> int:
+        """The play site of *load*: the next one in address order, unless
+        the load is one of the few a later play takes (`sound.LOAD_PLAYS`)."""
+        return sound.LOAD_PLAYS.get(load,
+                                    plays[bisect.bisect_right(plays, load)])
+
     derived = tuple(a for a in sorted(sites)
-                    if PLAY_SITES[plays[bisect.bisect_right(plays, a)]][1]
-                    == PLAY_LOOPING)
+                    if PLAY_SITES[played_by(a)][1] == PLAY_LOOPING)
     ck.equal("sound.looping_loads", tuple(sorted(sound.LOOPING_LOADS)), derived,
              Checker.brief)
     ck.equal("sound.looping_plays",
-             len({plays[bisect.bisect_right(plays, a)]
-                  for a in sound.LOOPING_LOADS}),
+             len({played_by(a) for a in sound.LOOPING_LOADS}),
              sound.LOOPING_PLAY_SITES)
+    # Each override names a real play site of the same routine, later than
+    # the load, and not the one the address order would have picked.
+    ck.check("sound.load_plays_are_later_plays",
+             all(p in PLAY_SITES and p > a
+                 and p != plays[bisect.bisect_right(plays, a)]
+                 for a, p in sound.LOAD_PLAYS.items()),
+             f"{len(sound.LOAD_PLAYS)} load(s) played past the next play site")
 
     # ---- 2: the catalogue the converter writes
     table = sound.catalogue(sites)
