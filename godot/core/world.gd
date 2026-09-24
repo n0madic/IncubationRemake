@@ -606,7 +606,7 @@ func submit_move(command: MoveCommand) -> MoveResult:
 	_refund_mp(unit)
 	moved.reactions = Reaction.drain(state, _units, _unit_types, _weapons,
 		unit, turn.ai_level, turn.human_count(), turn.mode, turn, rng,
-		_journal, cheats, _overlay_for)
+		_journal, cheats, _overlay_for, _ctrlmap)
 	return moved
 
 
@@ -667,7 +667,7 @@ func submit_attack(command: AttackCommand) -> AttackResult:
 	var shot: AttackResult = Combat.attack(state, _units, _unit_types,
 		_weapons, unit.x, unit.y, command.x, command.y, turn.ai_level,
 		turn.human_count(), turn.mode, turn, rng, false, cheats,
-		_overlay_for(unit))
+		_overlay_for(unit), _ctrlmap)
 	# **The weapon the animation was played with**, which after a close-combat
 	# swap is the bayonet and not what the record holds on either side of the
 	# shot: the engine plays the animation at `0x0046C186`, inside the swap's
@@ -700,7 +700,7 @@ func submit_attack(command: AttackCommand) -> AttackResult:
 		weapon_fired, str(weapon_fired), shot.to_dict())
 	shot.reactions = Reaction.drain(state, _units, _unit_types, _weapons,
 		unit, turn.ai_level, turn.human_count(), turn.mode, turn, rng,
-		_journal, cheats, _overlay_for)
+		_journal, cheats, _overlay_for, _ctrlmap)
 	return shot
 
 
@@ -1226,7 +1226,7 @@ func submit_warp(command: WarpCommand) -> WarpResult:
 		_refund_mp(unit)
 		result.reactions = Reaction.drain(state, _units, _unit_types,
 			_weapons, unit, turn.ai_level, turn.human_count(), turn.mode,
-			turn, rng, _journal, cheats, _overlay_for)
+			turn, rng, _journal, cheats, _overlay_for, _ctrlmap)
 	return result
 
 

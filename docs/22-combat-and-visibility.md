@@ -1286,6 +1286,35 @@ campaign armoury hands out — so the arm is reachable in a campaign and not
 from authored data. `combat_tables.py`'s `spidy.arm`, `spidy.spawn`,
 `spidy.unreachable` and `spidy.armoury_half` pin both halves of that.
 
+**What the arm does, in order** (read 2026-09-24 off `0x0040D65C`..`0x0040D706`;
+the jump table `0x0040E614`/`0x0040E5D4` sends id 46 to index 14 and there):
+
+1. `aGetCtrlMapElementPtr(x, y)` on the cell every arm of the switch uses
+   (`ebp`, `ebx`), its answer discarded;
+2. `aGenerateUnitElement(aGetCurrentPlayer(), 0x18, "Spidy", 0, 0, x, y, 0,
+   &out)` — **unchecked**. `exact` is 0, so a shot aimed at a unit, whose cell
+   is taken, lands the Spider on the first neighbour `0x00479C60` accepts in
+   `0x004308C0`'s order ([`20` §7.4](20-lcl-language.md)), and a cell ringed
+   by walls lands nothing. The player is `0x0043B2C0`'s — the **turn's**, not
+   the shooter's — so a reaction fired in the computer's turn lands the Spider
+   for the computer;
+3. `aBlob_CreateLandingDust(x, y)` (`0x004227C0`), `CHECK`ed;
+4. `aBuildVisibleMap(aGetCurrentPlayer())` at `0x0040D6BD`, permanent; a
+   failure returns 0 from the whole animation;
+5. `0x00477970(record, 11)` — `+0x56`, the animation handle
+   ([`42` §6.2.1](42-mission-presentation.md)) — and `0x004FEA4C = 1`, the
+   flag the hatch arm also raises (`0x0046F3B0`) and `aAttackUnit` clears at
+   `0x0046B967`; its one reader, `0x0046C1A9`, skips a call through a
+   `NewToolsR` object's vtable (`0x004960F5`). Both are presentation;
+   **UNVERIFIED** what that object is.
+
+**The remake implements it** (2026-09-24): `Combat.attack` runs the arm beside
+`CellObjects.place_impact`, the switch's other map-changing arms, through
+`UnitState.generate` and a permanent `Visibility.build`, and reports the slot
+as `AttackResult.spawned`; the dust is the picture's, which `weapon_impact`
+already named for 46. `test_combat.gd`'s `spidy.*` pins the player, the cell,
+the record, the fog and the wall.
+
 ### 9.4.3 The `0x004149C7` rebuild is the spore hatch, not `FixedStatue`
 
 > **The routine boundary was wrong.** An earlier revision of this document
@@ -1560,7 +1589,15 @@ asserts the ten names §1.1 depends on.
 
 ## 12. Open questions
 
-**None.**
+1. **What `0x004FEA4C` suppresses** (opened 2026-09-24, §9.4.2). Weapon 46's
+   impact arm and the hatch arm both set it after their permanent fog rebuild;
+   `aAttackUnit` clears it at `0x0046B967` and reads it once, at `0x0046C1A9`,
+   to skip `0x004960F5([ecx+0x45], [esp+0x40])` — a call through a
+   `NewToolsR` object's vtable (`+0x18`, `+0x14`, `+0x08`). No simulation state
+   is read on that path, which is why the remake leaves it out; what the
+   object is (a status line, the shot's text) has not been traced.
+
+Closed:
 
 1. ~~**What the unit pool draws the uncounted stream for.**~~ **Closed** —
    §3.2. All three sites do the identical thing: `aRandom(1, 6)`, `__ftol`,

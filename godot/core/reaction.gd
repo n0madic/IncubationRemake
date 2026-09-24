@@ -124,7 +124,8 @@ static func drain(state: MapState, units: Dictionary, utab: UnitTypeTable,
 		rng: IncRandom,
 		journal: EventJournal = null,
 		cheats: Cheats = null,
-		overlay_for: Callable = Callable()) -> Array[Dictionary]:
+		overlay_for: Callable = Callable(),
+		ctrlmap: CtrlMapTable = null) -> Array[Dictionary]:
 	var fired: Array[Dictionary] = []
 	if not mover.is_alive():
 		return fired
@@ -166,7 +167,7 @@ static func drain(state: MapState, units: Dictionary, utab: UnitTypeTable,
 			states = overlay_for.call(reactor)
 		var result: AttackResult = Combat.attack(state, units, utab, wtab,
 			reactor.x, reactor.y, mover.x, mover.y, ai_level, human_players,
-			game_mode, turn, rng, true, cheats, states)
+			game_mode, turn, rng, true, cheats, states, ctrlmap)
 		reactor.facing = facing
 		var shot: Dictionary = {"reactor": reactor.slot,
 			"ticket": reactor.ticket, "attack": result.to_dict(),

@@ -103,7 +103,7 @@ static func run(ctx: AIContext, unit: UnitState, mode: int = FIRE_ANY,
 			var attack: AttackResult = Combat.attack(ctx.map, ctx.units,
 				ctx.utab, ctx.wtab, unit.x, unit.y, bx, by,
 				ctx.turn.ai_level, ctx.turn.human_count(), ctx.turn.mode,
-				ctx.turn, ctx.rng, false, ctx.cheats, ctx.state)
+				ctx.turn, ctx.rng, false, ctx.cheats, ctx.state, ctx.ctab)
 			if not attack.reason.is_empty() and not attack.fired:
 				ctx.refuse(attack.reason)
 			# The note is the weapon the animation was played with, not the
@@ -127,7 +127,7 @@ static func run(ctx: AIContext, unit: UnitState, mode: int = FIRE_ANY,
 		var reactions: Array[Dictionary] = Reaction.drain(ctx.map, ctx.units,
 			ctx.utab, ctx.wtab, unit, ctx.turn.ai_level,
 			ctx.turn.human_count(), ctx.turn.mode, ctx.turn, ctx.rng,
-			ctx.journal, ctx.cheats)
+			ctx.journal, ctx.cheats, Callable(), ctx.ctab)
 		if not reactions.is_empty():
 			ctx.emit(AIEvent.make("reactions", unit.slot, unit.x, unit.y,
 				0, 0, reactions.size(), "",

@@ -43,6 +43,11 @@ var skill_raised: int = 0
 ## every caller that needs this reads it off the live object before it
 ## serialises anything.
 var presented_weapon: int = -1
+## The slot of the Spider weapon 46's impact arm landed (`0x0040D65C`,
+## docs/22 section 9.4.2), or -1. Not part of [method to_dict] either: the
+## arm is reachable only from the campaign armoury, and the Python twin's
+## fixtures never fire it.
+var spawned: int = -1
 ## What `aExecuteFight` drained after the shot. The *caller* of `aAttackUnit`
 ## runs it -- both the UI at `0x004731F5` and the computer's fire routine at
 ## `0x0040A5AB` -- so it is filled in by [method World.submit_attack] and left

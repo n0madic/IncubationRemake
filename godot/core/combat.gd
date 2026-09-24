@@ -108,6 +108,11 @@ const SPECIAL_HATCH: int = 9
 ## `push 0x36` at `0x0046F338`; `push 0xff` at `0x0046F33A`.
 const HATCH_TYPE: int = 0x36
 const HATCH_PLAYER: int = UnitState.PLAYER_ALIEN
+## `0x0040D65C`, the impact switch's arm for weapon 46, `Mine Thrower
+## Enhanced` (docs/22 section 9.4.2) -- it lands a Spider, named by the
+## `push 0x4C0F08` beside the type's `push 0x18`.
+const SPIDY_WEAPON: int = 46
+const SPIDY_NAME: String = "Spidy"
 ## `cmp byte [esi + 0x16], 5` then `ja` -- six or more and nothing happens.
 const HATCH_HP_LIMIT: int = 5
 ## The attacker's weapon `type` (`SetWeaponInfo + 0x37`), compared to 1, 2 and
@@ -1063,7 +1068,8 @@ static func attack(state: MapState, units: Dictionary, utab: UnitTypeTable,
 		human_players: int, game_mode: int, turn: TurnState,
 		rng: IncRandom, reaction: bool = false,
 		cheats: Cheats = null,
-		states: PackedByteArray = PackedByteArray()) -> AttackResult:
+		states: PackedByteArray = PackedByteArray(),
+		ctrlmap: CtrlMapTable = null) -> AttackResult:
 	var result: AttackResult = AttackResult.new()
 	var attacker: UnitState = _unit_on(state, units, x, y)
 	if attacker == null:
@@ -1367,6 +1373,24 @@ static func attack(state: MapState, units: Dictionary, utab: UnitTypeTable,
 	# alike, which is the gun's and the bayonet's.
 	var _placed: PackedInt32Array = CellObjects.place_impact(
 		state, result.presented_weapon, tx, ty)
+	# `0x0040D65C` -- weapon 46's arm of the same switch lands a unit instead
+	# (docs/22 section 9.4.2): `aGenerateUnitElement(aGetCurrentPlayer(), 0x18,
+	# "Spidy", 0, 0, x, y, 0)` on the same cell the other arms use, its answer
+	# unchecked, then `aBlob_CreateLandingDust` -- the picture's, which
+	# `weapon_impact` already names for 46 -- and a **permanent**
+	# `aBuildVisibleMap` for the current player at `0x0040D6BD`. The player is
+	# `0x0043B2C0`'s, the turn's, and not the shooter's: a reaction shot lands
+	# its Spider for the side whose turn it is. `exact` is 0, so an occupied
+	# target cell -- the usual case, a shot is aimed at somebody -- puts the
+	# Spider on the first free neighbour.
+	if result.presented_weapon == SPIDY_WEAPON:
+		var spidy: UnitState = UnitState.generate(state, units, utab, wtab,
+			ctrlmap, turn.current_player, UnitState.SPIDER_TYPE, SPIDY_NAME, 0,
+			0, tx, ty, false, ai_level, null)
+		if spidy != null:
+			result.spawned = spidy.slot
+		Visibility.build(state, units, utab, turn.current_player,
+			human_players, game_mode)
 	result.skill_raised = skill_levels_raised(utab, attacker, tp_before)
 
 	# **`aPlayFightAnimation` is not only an animation.**  `0x0040BD70` -- which

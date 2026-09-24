@@ -65,6 +65,7 @@ func run(h: TestHarness) -> void:
 	_heal(h)
 	_interaction(h)
 	_the_hatch(h)
+	_the_spidy(h)
 	_the_hero_counter(h)
 	_fog_probe(h)
 
@@ -2233,6 +2234,119 @@ static func _wired_world() -> World:
 	]
 	return World.create(TestFixtures.map_document(9, 9, units),
 		TestFixtures.balance(), 1.0)
+
+
+## `0x0040D65C` -- weapon 46's impact arm lands a Spider (docs/22 section
+## 9.4.2). No shipped `.lev` arms a unit with it, so this is the only place the
+## arm runs; what it pins is read off the arm and off `0x00479CF0`.
+func _the_spidy(h: TestHarness) -> void:
+	var types: UnitTypeTable = UnitTypeTable.from_rows([
+		{"id": 0, "mp_max": 4, "fp_max": 0, "hp_max": 20, "special": 0,
+			"size": 0, "species": 0, "height": 20, "model": "",
+			"description": "soldier"},
+		{"id": UnitState.SPIDER_TYPE, "mp_max": 10, "fp_max": 255,
+			"hp_max": 1, "special": 0, "size": 0, "species": 3, "height": 4,
+			"model": "", "weapon": 17, "description": "Spider"},
+	])
+	var thrower: int = Combat.SPIDY_WEAPON
+	var other: int = 42
+	var weapons: WeaponTable = WeaponTable.from_rows([
+		{"id": thrower, "heat": 255, "toggle": thrower, "mun": 255, "hit": 100,
+			"damage": 0, "range_min": 1, "range_max": 30, "type": 3,
+			"special": 0, "def_mode": 0, "mun_per_fight": 1},
+		{"id": other, "heat": 255, "toggle": other, "mun": 255, "hit": 100,
+			"damage": 0, "range_min": 1, "range_max": 30, "type": 3,
+			"special": 0, "def_mode": 0, "mun_per_fight": 1},
+		{"id": 17, "mun": 3},
+	])
+	var rng: IncRandom = IncRandom.new()
+
+	# Aimed at an alien: the cell is taken, so `exact == 0` walks the
+	# neighbours in `0x004308C0`'s order and (3,2) is direction 0.
+	var scene: Scene = _scene()
+	scene.types = types
+	scene.weapons = weapons
+	var gunner: UnitState = _place(scene, 0, 0, 1, 1, 3)
+	gunner.weapon = thrower
+	var _target: UnitState = _place(scene, 1, UnitState.PLAYER_ALIEN, 3, 1, 0)
+	gunner.visibility = 7
+	rng.randomize_seed(1.0)
+	var shot: AttackResult = Combat.attack(scene.state, scene.units, types,
+		weapons, 1, 1, 3, 1, 1, 1, 1, _turn(), rng)
+	h.check("spidy.it_landed", shot.spawned >= 0, "spawned %d" % shot.spawned)
+	if shot.spawned < 0:
+		return
+	var spidy: UnitState = scene.units[shot.spawned]
+	h.equal("spidy.a_spider_for_the_current_player_beside_the_target",
+		[spidy.type_id, spidy.player, spidy.name, spidy.x, spidy.y],
+		[UnitState.SPIDER_TYPE, 0, "Spidy", 3, 2],
+		"`push 0x18`, `push \"Spidy\"`, `aGetCurrentPlayer()`; (0,+1) first")
+	h.equal("spidy.the_whole_record_is_generated",
+		[spidy.weapon, spidy.ammo, spidy.fp, spidy.mp, spidy.hp, spidy.speech],
+		[17, 3, Refresh.FP_NONE, 10, 1, UnitState.SPEECH_SPIDY],
+		"0x00479CF0: the type's weapon, 0x004759E0, and speech set 12")
+	h.equal("spidy.the_fog_was_rebuilt_for_good", gunner.visibility,
+		Visibility.FULL, "aBuildVisibleMap(aGetCurrentPlayer()) at 0x0040D6BD")
+
+	# **The turn's player, not the shooter's**: a reaction fired during the
+	# computer's turn lands the Spider for the computer.
+	var reacting: Scene = _scene()
+	reacting.types = types
+	reacting.weapons = weapons
+	var sentry: UnitState = _place(reacting, 0, 0, 1, 1, 3)
+	sentry.weapon = thrower
+	var _mover: UnitState = _place(reacting, 1, UnitState.PLAYER_ALIEN, 3, 1, 0)
+	rng.randomize_seed(1.0)
+	var reacted: AttackResult = Combat.attack(reacting.state, reacting.units,
+		types, weapons, 1, 1, 3, 1, 1, 1, 1, _turn(UnitState.PLAYER_ALIEN), rng,
+		true)
+	var landed_for: int = -1
+	var voice: int = -1
+	if reacted.spawned >= 0:
+		var theirs: UnitState = reacting.units[reacted.spawned]
+		landed_for = theirs.player
+		voice = theirs.speech
+	h.equal("spidy.a_reaction_lands_it_for_the_side_whose_turn_it_is",
+		[landed_for, voice], [UnitState.PLAYER_ALIEN, 0],
+		"0x0043B2C0 is the turn's player; player 255 draws no voice")
+
+	# `0x00479C60` with the field table: a wall on direction 0 is skipped.
+	var walled: Scene = _scene()
+	walled.types = types
+	walled.weapons = weapons
+	var mason: UnitState = _place(walled, 0, 0, 1, 1, 3)
+	mason.weapon = thrower
+	var _walled_target: UnitState = _place(walled, 1, UnitState.PLAYER_ALIEN, 3,
+		1, 0)
+	walled.state.set_field_type(walled.state.index_of(3, 2),
+		Interact.FIELD_TYPE_WALL)
+	var ctrlmap: CtrlMapTable = CtrlMapTable.from_rows([
+		{"index": Interact.FIELD_TYPE_FREE, "delay": 1, "name": "free"},
+		{"index": Interact.FIELD_TYPE_WALL, "delay": 255, "name": "wall"}])
+	rng.randomize_seed(1.0)
+	var blocked: AttackResult = Combat.attack(walled.state, walled.units, types,
+		weapons, 1, 1, 3, 1, 1, 1, 1, _turn(), rng, false, null,
+		PackedByteArray(), ctrlmap)
+	var at: Array[int] = [-1, -1]
+	if blocked.spawned >= 0:
+		var walled_spidy: UnitState = walled.units[blocked.spawned]
+		at = [walled_spidy.x, walled_spidy.y]
+	h.equal("spidy.a_wall_is_not_a_landing", at, [2, 1],
+		"direction 1, (-1,0), after the wall on direction 0")
+
+	# Every other weapon of the switch lands nothing.
+	var plain: Scene = _scene()
+	plain.types = types
+	plain.weapons = weapons
+	var layer: UnitState = _place(plain, 0, 0, 1, 1, 3)
+	layer.weapon = other
+	var _plain_target: UnitState = _place(plain, 1, UnitState.PLAYER_ALIEN, 3,
+		1, 0)
+	rng.randomize_seed(1.0)
+	var mined: AttackResult = Combat.attack(plain.state, plain.units, types,
+		weapons, 1, 1, 3, 1, 1, 1, 1, _turn(), rng)
+	h.equal("spidy.only_weapon_46", [mined.spawned, plain.units.size()],
+		[-1, 2], "weapon 42's arm lays a mine and spawns nobody")
 
 
 ## docs/21 section 5's `special` 9 -- `0x0046F210` `case 4`, the one arm of the
