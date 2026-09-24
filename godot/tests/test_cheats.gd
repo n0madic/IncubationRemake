@@ -17,6 +17,8 @@ extends TestSuite
 ## can miss it, damage 8 so the loss is unmistakable, and a magazine so a
 ## spend is visible.
 const GUN: int = 3
+## `High Energy Laser B`, the stun mode -- docs/22 section 7.2's `0x46AEBD`.
+const STUN_WEAPON: int = 45
 const SCENE_SIZE: int = 8
 ## A soldier type with no fitness override -- `fp` 255 -- so the damage roll's
 ## fatigue arms stay out of the way.
@@ -456,6 +458,36 @@ func _one_shot(h: TestHarness) -> void:
 		0, 1, TurnState.MODE_CAMPAIGN, mixed.turn, mixed.rng, false, both)
 	h.equal("kill.friendly_fire_is_shielded", two.hp, TOUGH_HP)
 
+	# The non-lethal modes stay non-lethal: the Enhanced Laser's second mode
+	# converts and the High Energy Laser's stuns, and a mission (`_C_173`)
+	# may need its target alive.
+	var taming: Scene = _scene()
+	var tamer: UnitState = _place(taming, 0, 0, 2, 2)
+	tamer.weapon = Combat.CONVERTER_WEAPON
+	var beast: UnitState = _place(taming, 1, UnitState.PLAYER_ALIEN, 5, 2)
+	# Weapon 47 is set to its heat cap before every shot, so its overheat
+	# roll can jam it; the ammunition switch takes that roll away, which
+	# leaves the kill switch the only thing under test.
+	var tame: Cheats = _with("kill")
+	var _armed: bool = tame.set_enabled("ammo", true)
+	var _tamed: AttackResult = Combat.attack(taming.state, taming.units,
+		taming.types, taming.weapons, tamer.x, tamer.y, beast.x, beast.y,
+		0, 1, TurnState.MODE_CAMPAIGN, taming.turn, taming.rng, false, tame)
+	h.check("kill.the_converter_does_not_kill", beast.is_alive(),
+		"hp %d" % beast.hp)
+	h.equal("kill.the_converter_converts", beast.player, 0,
+		"the guaranteed hit lands and 0x0046BDAD takes it over")
+	var dazing: Scene = _scene()
+	var dazer: UnitState = _place(dazing, 0, 0, 2, 2)
+	dazer.weapon = STUN_WEAPON
+	var dazed: UnitState = _place(dazing, 1, UnitState.PLAYER_ALIEN, 5, 2)
+	var _stun: AttackResult = Combat.attack(dazing.state, dazing.units,
+		dazing.types, dazing.weapons, dazer.x, dazer.y, dazed.x, dazed.y,
+		0, 1, TurnState.MODE_CAMPAIGN, dazing.turn, dazing.rng, false, on)
+	h.check("kill.the_stun_does_not_kill", dazed.is_alive(), "hp %d" % dazed.hp)
+	h.equal("kill.the_stun_stuns", dazed.action_state,
+		Combat.STUNNED_ACTION_STATE)
+
 
 func _ammunition(h: TestHarness) -> void:
 	var plain: Scene = _scene()
@@ -641,6 +673,13 @@ static func _scene(rng_seed: float = 1.0) -> Scene:
 		{"id": GUN, "heat": 4, "toggle": GUN, "mun": 15, "hit": 100,
 			"damage": 8, "range_min": 1, "range_max": 30, "type": 1,
 			"special": 0, "def_mode": 0, "mun_per_fight": 1},
+		{"id": Combat.CONVERTER_WEAPON, "heat": 4,
+			"toggle": Combat.CONVERTER_WEAPON, "mun": 255, "hit": 90,
+			"damage": 1, "range_min": 1, "range_max": 30, "type": 1,
+			"special": 0, "def_mode": 0, "mun_per_fight": 1},
+		{"id": STUN_WEAPON, "heat": 4, "toggle": STUN_WEAPON, "mun": 255,
+			"hit": 90, "damage": 10, "range_min": 1, "range_max": 30,
+			"type": 0, "special": 0, "def_mode": 0, "mun_per_fight": 1},
 		{"id": Combat.BOMB_WEAPON, "heat": 255,
 			"toggle": Combat.BOMB_WEAPON, "mun": 255, "hit": 100,
 			"damage": 100, "range_min": 1, "range_max": 1, "type": 1,

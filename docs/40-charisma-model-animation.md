@@ -1432,6 +1432,16 @@ So the letters are settled by their call sites, not by guesswork:
   alone is without it; the remake's pipeline adds it explicitly from `kind`
   4's own literal, and did not before 2026-09-09 (`CONVERTER_VERSION` 0.31.0),
   which is why an upgrade base's landing pad was empty.
+
+**The cache's key closure covers the player bytes a unit can change to, not
+only the one it is placed with** (2026-09-24, `CONVERTER_VERSION` 0.45.0).
+Weapon 47 hands its target to the shooter's seat ([`22` §7.3](22-combat-and-visibility.md)),
+so an alien can be drawn under player 0–3 mid-mission. The selectors answer
+those keys with the alien's own body (`66,7,0` and `66,7,255` both name
+`PC_021`), but `convert.unit_selector_keys` closed over the placed player
+alone and a converted `Bea'Coo` on `_C_173` was drawn as the fallback
+capsule. `remake_convert.py --check`'s `bodies.closure_covers_units` now
+requires the human seats too.
 * **`J`** — **no code path references any `_J<n>_` name**; the substring does not
   occur in either executable. The three shipped files `P0_J0_000.cha`,
   `P0_J0_005.cha` and `P0_J0_006.cha` are unreferenced leftovers. What the letter

@@ -5329,7 +5329,10 @@ func _watching(at: World) -> Dictionary:
 	if at == null or not _computer_played \
 			or at.turn.current_player != TurnState.PLAYER_COMPUTER:
 		return {}
-	var player: int = at.turn.previous_player
+	# The watched side is the seat itself: the aliens' units carry 255 as
+	# their player, and `0x0043B2C0` hands the bar `[0x00509E32]`. The
+	# previous seat is the marines', whose points do not move all turn.
+	var player: int = at.turn.current_player
 	var counts: Vector2i = TurnProgress.tally(at, player)
 	return {"player": player, "acted": counts.x, "live": counts.y}
 
@@ -9094,6 +9097,12 @@ class MainShotHost extends ShotHost:
 
 	func pool_live() -> int:
 		return 0 if main._fx == null else main._fx.live()
+
+	func pool_live_on_map() -> int:
+		var at: World = main.shown()
+		if main._fx == null or at == null:
+			return pool_live()
+		return main._fx.live_on_map(at.resource.width, at.resource.height)
 
 	func muzzle_in_flight() -> bool:
 		return main._triggers != null and main._triggers.in_flight()

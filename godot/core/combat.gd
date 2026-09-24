@@ -1267,7 +1267,12 @@ static func attack(state: MapState, units: Dictionary, utab: UnitTypeTable,
 		# rather than as `damage = 255` because `applyDamage` subtracts armour
 		# from any damage at all and refuses [constant IMMUNE_UNIT_TYPE]
 		# outright -- neither of which a one-shot kill may be stopped by.
-		if one_shot and target.is_alive():
+		# **Not for the converter.** Weapon 47 -- the Enhanced Laser's second
+		# mode -- exists to take its target alive, so a kill here would make
+		# the switch refuse the very shot a mission may ask for (`_C_173`).
+		# The hit is still guaranteed; only the finishing blow is withheld.
+		if one_shot and target.is_alive() \
+				and attacker.weapon != CONVERTER_WEAPON:
 			dealt += target.hp
 			target.hp = 0
 		# `0x0046BDAD` -- weapon 47 converts what it hits and does not kill.

@@ -307,8 +307,16 @@ static func enqueue(queue: SequenceQueue, host: ShotHost,
 
 ## The play-out's end: the pool empty, the fade over, the clip stopped
 ## (`0x0040E2F2`..`0x0040E30C`).
+##
+## **"Empty" leaves out the records that have left the map** -- the remake's
+## own, a deliberate divergence (docs/92 section 7.11). A fire explosion's
+## kind-75 children fly off the world within a few ticks (docs/28 section
+## 7.7.2), and waiting out every generation of them held Mine Thrower
+## Enhanced's eighteen blasts for about two seconds of unchanging screen with
+## the pool full. They are not removed: they tick on in the background and
+## still occupy their slots, exactly as the engine's do.
 static func _settled(host: ShotHost, shooter: int) -> bool:
-	return host.pool_live() == 0 and not host.is_fading() \
+	return host.pool_live_on_map() == 0 and not host.is_fading() \
 		and not host.body_playing(shooter)
 
 

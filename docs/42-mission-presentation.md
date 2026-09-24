@@ -671,6 +671,14 @@ safety bound; `BlobPool.live()` is the sweep's predicate now
 (`presentation_tables.py`, `sweep.live_count_classes_0_and_2`). Unit
 type 0x37 and animation slot 0x0B skip the resume.
 
+**The remake's play-out also leaves out what has left the map** (2026-09-24,
+a deliberate divergence, [`92` §7.11](92-remake-architecture.md)). A fire
+explosion's kind-75 fragments fly off the world and keep the engine's count up
+for every generation of their cascade ([`28` §7.7.2](28-effects-and-sound.md)).
+`ShotSequence._settled` therefore asks `BlobPool.live_on_map`, which is the
+counter restricted to records inside the map's footprint widened by its longer
+side. The 20-frame pool stage above still reads the engine's counter.
+
 So one shot is: aim in 3–6 frames, hold while the round flies (≤ 100 frames),
 the numbers rise for 20+ frames, the arm comes down. A remake that holds a
 fixed 0.35 s and never resumes the clip (`97` §24.2) reproduces none of the

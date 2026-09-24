@@ -1447,6 +1447,37 @@ minus it (37). Kind 14's angle is `life · 20` while `vz == 0` and
 filled by any creator, and this document had no turn in either until one was
 stepped inside the engine — `docs/97` §20.1.
 
+### 7.7.2 Kind 75's children leave the world
+
+*(2026-09-24.)* Kind 75 is the fire explosion's fragment. When one with
+`aux > 2` expires, its arm calls the constructor directly four times.
+Each child is class 2, kind 75, and gets a size of `aRandom2(3, 10)` and
+an aux of `aux − aux/3`. It is placed at the parent's position, and its
+**velocity** is the parent's *position* plus an offset of `aRandom2(-0x140,
+0x280)` horizontally and `aRandom2(-0xA0, 0x140)` vertically. Its velocity
+is not the offset alone. A fragment with `aux ≤ 2` spawns
+`aBlob_CreatePlasmaSparks` instead.
+
+That reads like a transcription slip, but it is the engine's own. The arm's
+children are among the spawns stepped inside the running game
+(`blob_gold.py`: `SPAWN_KINDS_STEPPED` includes 75 and
+`SPAWN_ARMS_DISAGREE` is empty), so the argument list above is what the
+constructor receives.
+
+What follows from it: the move step adds a velocity the size of the map
+coordinate, so every child is off the map within a few ticks and never comes
+back. Its own children are born where it died, so they start off the map as
+well. The cascade still runs its generations in full: aux 20 loses a third
+per generation and reaches 2 after seven of them, at four children each. Every record of it counts toward
+`0x004FE640`, the live count a play-out spins on ([`42`
+§4.9](42-mission-presentation.md)). Measured in the remake on `_C_174` with
+Mine Thrower Enhanced (weapon 13, eighteen blasts): the pool reached its 450
+records, and 151 of 151 live kind-75 records stood at coordinates between
+2.5 and 92 million — the map is 128 000 units across. The shot's play-out
+then held the screen for about two seconds with nothing to show. The remake
+does not wait for them ([`92` §7.11](92-remake-architecture.md)); the records
+themselves are kept, pool slots and all.
+
 ### 7.8 Four `object_3d` fields the arms write: the joint angles
 
 `+0x2A`, `+0x2C`, `+0x2E` and `+0x34` — object offsets `+0x26`, `+0x28`, `+0x2A`

@@ -1346,6 +1346,25 @@ time the arm runs. Measured live on `_C_168` (weapon 11 against the aliens
 at (2..4, 6..7)): in flight every record's `rot_z` tracks its step, and only
 the rounds still at the spawn point carry `(0, 0, 0)`.
 
+**A shot's play-out does not wait for effects that have left the map**
+*(2026-09-24, a deliberate divergence)*. The engine's play-out spins until
+`0x004FE640` reaches zero ([`42` §4.9](42-mission-presentation.md)). A fire
+explosion's kind-75 fragments fly off the world within a few ticks, because
+the engine gives each child the parent's *position* as its velocity. They keep
+that count up for all seven generations of the cascade anyway
+([`28` §7.7.2](28-effects-and-sound.md)). On `_C_174`, Mine Thrower Enhanced's
+eighteen blasts filled the pool and left about two seconds with nothing
+visible moving and the interface locked, which read as a hang.
+`ShotSequence._settled` asks `ShotHost.pool_live_on_map` instead, and the scene
+answers it with `BlobPool.live_on_map`: the same classes the sweep counts, less
+any record outside the map's footprint widened by its longer side on every
+side, or further than that above or below the ground. The records are **not**
+deleted. They tick on and hold their pool slots as the engine's do, so
+`test_blob.gd`'s per-tick diff and a crowded pool's drops are unchanged. Only
+the moment the shot hands control back moves. The bounded 20-frame pool stage
+and the set-piece sequences still read the engine's counter. Not a
+`compat_flags` option: the empty wait is output no player would choose.
+
 ### 7.12 The environment's objects — three decisions and one correction (2026-09-03)
 
 Slice E of the presentation plan ([`97` §37](97-slice-5-report.md)) put the
@@ -2393,7 +2412,7 @@ verification.
 | | Decision |
 |---|---|
 | C1 | **`Cheats` is a rule modifier, not simulation state.** It follows `World.ai_may_fire` ([`23` §1](23-ai-system.md)'s engine debug global) literally: outside `CanonicalHash`, outside `SaveCodec`, and carried by `World.clone()` **as the same object** -- one `Cheats` exists per session, `SliceMain` hands it to every world it builds, and a snapshot in the clone would freeze at clone time and diverge from the truth on the next toggle. Two worlds differing only in which switches are on are the same state, so a save taken with one on restores to a world whose hash matches -- and a save can neither carry a switch into a session that did not ask for it nor clear one the session did. |
-| C2 | **Four switches and one action.** `god` (no damage from a weapon or an explosion, and no stun), `ammo` (no ammunition, no heat, no overheat roll, no jam -- and, in the base, an open armoury: the Upgrade screen lists every weapon whatever the base's tech band and waives the skill requirement, raising the soldier's skills to it without spending TP; the price is still paid and the equipment half is untouched), `kill` (the shot connects and kills), `moves` (the movement points come back after a move, a shot, a use **or** a warp -- `aExecuteWarp`'s call site zeroes them outright, so it is the fourth charge and not an exception), and `nuke` -- a one-off that kills every unit no human seat controls. `nuke` is deliberately not a switch: it has no state to be in. |
+| C2 | **Four switches and one action.** `god` (no damage from a weapon or an explosion, and no stun), `ammo` (no ammunition, no heat, no overheat roll, no jam -- and, in the base, an open armoury: the Upgrade screen lists every weapon whatever the base's tech band and waives the skill requirement, raising the soldier's skills to it without spending TP; the price is still paid and the equipment half is untouched), `kill` (the shot connects and kills -- except the non-lethal modes: weapon 47, the Enhanced Laser's second mode, connects and converts, and weapon 45 connects and stuns, so a mission that needs its target alive, `_C_173`, stays playable), `moves` (the movement points come back after a move, a shot, a use **or** a warp -- `aExecuteWarp`'s call site zeroes them outright, so it is the fourth charge and not an exception), and `nuke` -- a one-off that kills every unit no human seat controls. `nuke` is deliberately not a switch: it has no state to be in. |
 | C3 | **"Mine" is `turn.player_kind[unit.player] == KIND_HUMAN`**, so the aliens' player 255 is outside the array and can never be protected, and the switches hold in a two-human session as well as in the campaign. `Cheats.controlled` is the single test; the four questions the rules ask (`shielded`, `armed`, `lethal`, `tireless`) are static and null-tolerant, which is what lets every seam default its argument to `null` and change no existing caller. |
 | C4 | **The shield borrows the Damage Absorber's own mechanism.** `applyDamage` is still called with the damage argument **zeroed** rather than skipped ([`22` §7.5](22-combat-and-visibility.md)), so the generator lands exactly where it would have and a cheated world's picture and truth stay in step. Both weapons and mines go through it; `Combat.apply_damage` itself is untouched. |
 | C5 | **The one-shot kill is written after the roll, not as damage 255.** `applyDamage` subtracts armour from any damage and refuses `IMMUNE_UNIT_TYPE 0x23` outright, so a large number is not a kill. The hit is forced with the `GUARANTEED_HIT_SPECIALS` idiom and the remaining health taken off after the call -- and never off a unit `god` protects, so the two switches held together do not make friendly fire lethal. |

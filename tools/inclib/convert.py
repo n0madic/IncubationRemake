@@ -792,6 +792,11 @@ def prototype_names(document: dict[str, Any], tables: BalanceTables,
 # Bodies: the Charisma closure
 # ---------------------------------------------------------------------------
 
+#: The seats a converted unit can be handed to: the shooter's player byte,
+#: which for the one converting weapon is a human seat.
+CONVERTIBLE_TO: tuple[int, ...] = tuple(range(4))
+
+
 def unit_selector_keys(document: dict[str, Any]) -> set[chatables.SelectorKey]:
     """Every ``(type, weapon, player)`` a mission's units can present.
 
@@ -806,11 +811,18 @@ def unit_selector_keys(document: dict[str, Any]) -> set[chatables.SelectorKey]:
       model changes with its weapon (a marine has 16 bodies), the weapon byte
       is written mid-mission by ``aToggleWeaponModes`` and by scripts, and the
       whole weapon range costs a few hundred lookups and about 25 KB.  Closing
-      over the default alone would work until the first weapon toggle.
+      over the default alone would work until the first weapon toggle;
+    * **every human seat is closed over as well.**  Weapon 47 -- the
+      Enhanced Laser's second mode -- hands its target to the shooter
+      (``0x0046BDAD``, ``docs/22`` §7.3), so an alien can present under a
+      human player's byte mid-mission.  The selector answers such a key with
+      the alien's own body, but a cache without the key drew the fallback
+      capsule in its place.
     """
     return {
-        chatables.SelectorKey(unit["type_id"], weapon, unit["player"])
+        chatables.SelectorKey(unit["type_id"], weapon, player)
         for unit in document["units"]
+        for player in {unit["player"], *CONVERTIBLE_TO}
         for weapon in range(chatables.WEAPON_LIMIT)
     }
 

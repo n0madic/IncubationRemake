@@ -1462,7 +1462,8 @@ func _replay_progress(h: TestHarness) -> void:
 	# The seat is the **mirror's**: the computer's turn hands over again
 	# inside `submit_end_turn`, so a bar read off the truth's `turn` would
 	# count the player's own squad. The mirror still stands where the turn
-	# began, and its `previous_player` is who is being watched.
+	# began, and its `current_player` -- 255, the aliens' own player byte --
+	# is who is being watched.
 	h.equal("progress.the_world_seat_is_not_it",
 		world.turn.current_player == player, false,
 		"_C_140 opens on the marines")
@@ -3255,9 +3256,26 @@ func _watching_gate(h: TestHarness) -> void:
 	world.turn.current_player = TurnState.PLAYER_COMPUTER
 	var watched: Dictionary = main._watching(main.shown())
 	h.check("hud.the_computers_seat_is_watched",
-		not watched.is_empty() and DictRead.as_int(watched.get("player", -1)) == was
+		not watched.is_empty()
+			and DictRead.as_int(watched.get("player", -1)) == UnitState.PLAYER_ALIEN
 			and main._watching_the_computer(),
 		"the mirror holds 255 from one hand-over to the next: %s" % str(watched))
+	# **And the bar moves with the aliens.** Counting the previous seat -- the
+	# marines, whose points stand still all turn -- left it on one capsule.
+	var alien: int = -1
+	for slot: int in world.unit_slots():
+		var view: Dictionary = world.unit_view(slot)
+		if DictRead.as_int(view["player"]) == UnitState.PLAYER_ALIEN \
+				and DictRead.as_int(view["hp"]) > 0:
+			alien = slot
+			break
+	var opened: int = DictRead.as_int(watched.get("acted", -1))
+	var alien_units: Dictionary = world.units_for_ai()
+	var spent: UnitState = alien_units[alien]
+	spent.mp = maxi(world.movement_allowance(alien, world.turn.ai_level) - 1, 0)
+	h.equal("hud.an_alien_move_fills_the_bar",
+		DictRead.as_int(main._watching(main.shown()).get("acted", -1)),
+		opened + 1, "the watched side's spent units are the aliens'")
 	world.turn.current_player = was
 	main._playback.skip()
 	# **The hand-over reads the mirror's seat.** The truth's rotation has run

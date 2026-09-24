@@ -47,7 +47,9 @@ var god: bool = false
 ## armoury: every weapon is on sale whatever the base's tech band, and none
 ## asks for skill points ([method armoury]).
 var ammo: bool = false
-## A shot by a unit a human player controls always connects and always kills.
+## A shot by a unit a human player controls always connects and always kills
+## -- except the converting laser's (weapon 47), which connects and converts,
+## and the stun laser's (weapon 45), which connects and stuns.
 var kill: bool = false
 ## Movement points are put back after a move, a shot, a use or a warp.
 var moves: bool = false

@@ -108,6 +108,33 @@ func live() -> int:
 	return count
 
 
+## [method live] without the records that have left the world -- **the
+## remake's own**, read only by the shot's play-out (docs/92 section 7.11).
+##
+## A record counts while it stands inside the map's footprint widened by the
+## map's longer side on every side, and no further than that side above or
+## below the ground. The one population this excludes in practice is the fire
+## explosion's kind 75 (docs/28 section 7.7.2): its children are given the
+## parent's **position** as their velocity, so they leave the map within a
+## few ticks and never come back, and the play-out would otherwise wait out
+## every generation of them with nothing on screen. `width` and `height` are
+## in map fields.
+func live_on_map(width: int, height: int) -> int:
+	var reach: int = maxi(width, height) * WorldSpace.WORLD_UNITS_PER_FIELD
+	var hi_x: int = width * WorldSpace.WORLD_UNITS_PER_FIELD + reach
+	var hi_y: int = height * WorldSpace.WORLD_UNITS_PER_FIELD + reach
+	var count: int = 0
+	for blob: Blob in _blobs:
+		if blob == null or not blob.alive \
+				or not COUNTED_CLASSES.has(blob.class_id):
+			continue
+		if blob.x < -reach or blob.x > hi_x or blob.y < -reach \
+				or blob.y > hi_y or blob.z < -reach or blob.z > reach:
+			continue
+		count += 1
+	return count
+
+
 ## Every record in use, whatever its class -- the occupancy the pool-full test
 ## reads (`create_blob` answering -1), not the sweep's counter.
 func in_use() -> int:

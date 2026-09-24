@@ -145,6 +145,13 @@ func pool_live() -> int:
 	return 0
 
 
+## [method pool_live] less the records that have left the map -- what the
+## play-out waits on instead of the engine's counter (docs/92 section 7.11,
+## [method BlobPool.live_on_map]). A host with no map answers the counter.
+func pool_live_on_map() -> int:
+	return pool_live()
+
+
 ## Whether any record the muzzle switch just made is still flying.
 ##
 ## The other half of the flight stage's condition -- the reasoning is at

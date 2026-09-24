@@ -638,18 +638,20 @@ def check_bodies(c: Checker, root: Path, cache_dir: Path,
              | {kind4},
              f"{len(emitted_anims)} clips, the kind-4 literal among them")
 
-    # Every unit of every converted mission finds its key in the table.
+    # Every unit of every converted mission finds its key in the table --
+    # under its own player byte and under every seat weapon 47 can hand it to.
     missing_keys: list[str] = []
     for name in missions:
         document = json.loads(
             (cache_dir / "missions" / name / "map.json").read_text())
         for unit in document["units"]:
-            for weapon in range(chatables.WEAPON_LIMIT):
-                key = f"{unit['type_id']},{weapon},{unit['player']}"
-                if key not in selectors["model"]["entries"]:
-                    missing_keys.append(f"{name}:{key}")
+            for player in {unit["player"], *convertmod.CONVERTIBLE_TO}:
+                for weapon in range(chatables.WEAPON_LIMIT):
+                    key = f"{unit['type_id']},{weapon},{player}"
+                    if key not in selectors["model"]["entries"]:
+                        missing_keys.append(f"{name}:{key}")
     c.expect("bodies.closure_covers_units", missing_keys[:4], [],
-             f"{len(missions)} missions, every unit and every weapon")
+             f"{len(missions)} missions, every unit, weapon and convert")
 
     # Every part's mesh is emitted; every emitted mesh is used.
     named: set[str] = set()

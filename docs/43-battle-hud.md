@@ -937,9 +937,14 @@ predicates and masks them with **what the replay has already played**
 (`AIPlayback.played_slots`, the events `[0, index)`); a casualty the replay is
 still holding on its feet (`AIPlayback.pending_casualties`) stays in the
 divisor, because the divisor is the side as the turn started. The side is the
-replay's own (`AIPlayback.player`) and **not** `world.turn.current_player`:
-the computer's turn runs inside `World.submit_end_turn` and hands over again
-by itself, so the seat is back on the marines before the first event is drawn.
+**mirror's** seat (`SliceMain.shown().turn.current_player`, 255 — the
+aliens' own player byte, as `0x0043B2C0` hands the engine `[0x00509E32]`)
+and **not** the truth's: the computer's turn runs inside
+`World.submit_end_turn` and hands over again by itself, so the truth's seat is
+back on the marines before the first event is drawn. (2026-09-24: the mirror's
+`previous_player` was read for a while instead — the marines, whose points
+stand still all turn — and the bar sat on its first capsule until the turn
+ended.)
 
 `MissionHud.refresh` takes the same switch to the rest of the interface — the
 panel is refreshed with no selection and the columns, the pad, the radar and

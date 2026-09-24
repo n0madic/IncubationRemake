@@ -118,7 +118,65 @@ func run(h: TestHarness) -> void:
 	_check_ground_fire(h)
 	_check_routine_sounds(h)
 	_check_emitters(h)
+	_check_escaped_records(h)
 
+
+
+## The fire explosion's kind 75 leaves the world, and the play-out does not
+## wait for it -- docs/28 section 7.7.2, docs/92 section 7.11.
+##
+## One record at `_C_174`'s blast point with the aux the fire explosion
+## gives it. Its children take the parent's position as their velocity, so
+## the cascade is still filling the pool long after the last record the map
+## could show is gone -- and the shot's settle, which used to wait on
+## [method BlobPool.live], waits on [method BlobPool.live_on_map] now.
+func _check_escaped_records(h: TestHarness) -> void:
+	const MAP_FIELDS: int = 40
+	var pool: BlobPool = BlobPool.create(1.0)
+	var inputs: BlobPrograms.Inputs = BlobPrograms.Inputs.new()
+	var hooks: GameBlobHooks = GameBlobHooks.over(pool, inputs)
+	hooks.rng.randomize_seed(1.0)
+	pool.set_hooks(hooks)
+	var _made: int = pool.create_blob({"kind": 75, "class_id": 2, "life": 1,
+		"aux": 20, "x": 11 * WorldSpace.WORLD_UNITS_PER_FIELD,
+		"y": 25 * WorldSpace.WORLD_UNITS_PER_FIELD, "z": 600})
+	var on_map_gone: int = -1
+	var all_gone: int = -1
+	var peak: int = 0
+	for tick: int in range(1, 200):
+		var _results: Array[BlobKinds.TickResult] = pool.tick_all()
+		peak = maxi(peak, pool.live())
+		if on_map_gone < 0 and pool.live_on_map(MAP_FIELDS, MAP_FIELDS) == 0:
+			on_map_gone = tick
+		if pool.live() == 0:
+			all_gone = tick
+			break
+	h.check("escaped.kind_75_cascades", peak > 16,
+		"%d record(s) at the peak" % peak)
+	h.check("escaped.leaves_the_map_first",
+		on_map_gone > 0 and all_gone > on_map_gone + 5,
+		"nothing on the map after %d tick(s), the pool empty after %d"
+			% [on_map_gone, all_gone])
+
+	# The settle stage asks the host for the on-map count: a pool whose every
+	# record has flown off ends the shot, where the engine's counter would
+	# have held it for the safety bound.
+	var host: EscapedHost = EscapedHost.new()
+	var queue: SequenceQueue = SequenceQueue.create(null)
+	var shot: Dictionary = {
+		"shooter": 3, "sx": 2, "sy": 0, "tx": 5, "ty": 0, "weapon": 13,
+		"own": true, "reaction": false, "xp": 0, "attack": null,
+		"caption": "", "targets": [], "strings": {},
+		"cues_shot": [], "cues_impact": [], "cues_barrel": []}
+	var _bound: int = ShotSequence.enqueue(queue, host, shot)
+	var frames: int = 0
+	while queue.is_running() and frames < 1000:
+		var _still: bool = queue.advance(1.0 / SequenceQueue.FRAMES_PER_SECOND)
+		frames += 1
+	h.check("escaped.settle_ignores_escaped_records",
+		frames < ShotSequence.SAFETY_FRAMES,
+		"%d frame(s) with %d record(s) off the map" % [frames,
+			host.pool_live()])
 
 
 ## `CreateBGB`, the one effect a **script** places -- docs/28 section 8.2.
@@ -2905,6 +2963,20 @@ class BombRunHost extends RecordingHost:
 const BAYONET_GUNS: Array[int] = [1, 2, 16]
 const BAYONET_WEAPON: int = 30
 const BAYONET_CLIP: String = "P0_F1_001"
+
+
+## A pool whose records have all left the map: the engine's counter never
+## drops, the on-map one is zero.
+class EscapedHost extends RecordingHost:
+	func pool_live() -> int:
+		return 200
+
+	func pool_live_on_map() -> int:
+		return 0
+
+	func tick_overlay() -> void:
+		if fading > 0:
+			fading -= 1
 
 
 class RecordingHost extends ShotHost:
