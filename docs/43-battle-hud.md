@@ -728,6 +728,14 @@ offset the rightmost inventory sprite lies on the bottom plate's bevel in the
 measured constants above remain unchanged in `HudTables`; this is an explicit
 presentation correction in `UnitPanel`.
 
+**A second correction applies only to the readable face.** A weapon name set
+in the remake's larger font can run into the inventory pictures on its row,
+which the shipped bitmap font never does. `UnitPanel._clear_weapon_name` moves
+the name and its shadow left until they end `NAME_INVENTORY_GAP` (3 plate
+units) short of every picture on that row as drawn (each placed by its own
+sprite offset), or of the inventory's first column when the unit carries
+nothing; with the shipped font the name is left where the engine puts it.
+
 ### 5.4 The save slots the interface owns
 
 `0x0041DA20`'s commands 5..8 save and load slots **32** (*Remind/Recall
@@ -929,14 +937,17 @@ one's last fill and one stray `progress.wav`. The remake resets it instead.
 
 ### 7.2 In the remake — `game/hud/turn_progress.gd`
 
-`core` decides the whole computer turn in one call and the world holds its end
+`core` decides the whole computer turn in one call and the truth holds its end
 from the first rebuild ([`23` §2](23-ai-system.md)), so neither count can be
-read straight off it: every alien's movement is already spent before the first
-of them is drawn moving. `TurnProgress.tally` takes the engine's own two
-predicates and masks them with **what the replay has already played**
-(`AIPlayback.played_slots`, the events `[0, index)`); a casualty the replay is
-still holding on its feet (`AIPlayback.pending_casualties`) stays in the
-divisor, because the divisor is the side as the turn started. The side is the
+read off the truth: every alien's movement is already spent before the first
+of them is drawn moving. `TurnProgress.tally` applies the engine's own two
+predicates to **the picture's world** instead — the lagging mirror
+[`100` §1](100-slice-8-report.md) introduced, which is one event behind the
+truth — so the units it shows as spent are the ones the replay has already
+drawn, and a casualty the replay has not yet played is still alive there and
+stays in the divisor. (Until slice 8 `tally` read the truth and masked it with
+two lists the replay kept, the slots already played and the casualties still
+held on their feet; the mirror retired both.) The side is the
 **mirror's** seat (`SliceMain.shown().turn.current_player`, 255 — the
 aliens' own player byte, as `0x0043B2C0` hands the engine `[0x00509E32]`)
 and **not** the truth's: the computer's turn runs inside

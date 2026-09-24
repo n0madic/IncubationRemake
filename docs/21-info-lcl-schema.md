@@ -407,7 +407,7 @@ Four consequences, and the first is the one a player notices:
   255, so the shot costs nothing and there is nothing for an empty magazine to
   refuse. The engine says the same from the other side: its weapon selector
   `0x0042FF30` gives a jammed or empty `special` 1 weapon its `param`
-  ([`23` §2](23-ai-turn.md)), which is how a computer unit keeps fighting with
+  ([`23` §2](23-ai-system.md)), which is how a computer unit keeps fighting with
   a spent gun. A remake that gates the player's shot on the **held** weapon's
   magazine — as this one did until 2026-09-09 — refuses exactly the one shot
   such a unit can still make;

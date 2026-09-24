@@ -497,7 +497,7 @@ be a compatibility promise that permanently pins the state model to another
 game's — a fixed slot 32, no field for the camera, a whole `.lev` embedded in
 every file ([`11`](11-save-game-format.md)).
 
-**A campaign save is a container over this one** ([§7.13](#713-the-campaign--twelve-decisions-2026-09-04) D10): `SaveCodec` refuses a
+**A campaign save is a container over this one** ([§7.13](#713-the-campaign--thirteen-decisions-2026-09-04) D10): `SaveCodec` refuses a
 blob whose map name is not the world's, which is exactly right for a mission
 save and exactly wrong for a campaign that outlives one, so the campaign
 document is its own and a mission in progress rides inside it as an opaque
@@ -1091,14 +1091,14 @@ reclassification, and six are recorded with the reason each is not:
 | `0x004490A9` | the load path | **implemented** at the end of `World.load_save` |
 | `0x0047DCCF` | `aNextPlayerHandling`'s one-shot | **implemented** as `World._first_hand_over`, campaign only, for a literal player 0 |
 | `0x004781C6` | `refreshCurrentPlayer` | **reclassified**: `0x004781C0` is a four-instruction forwarder — `push ebp; call aBuildVisibleMap` — with one caller. It *is* `Visibility.build`, not a mechanic beside it |
-| `0x0040D6BD` | weapon 46's impact arm | **recorded**: it spawns a `Spider` for the firing player ([`22` §9.4.2](22-combat-and-visibility.md)), and no placed unit in the 155-mission corpus carries a weapon above 29. Reachable only through the campaign armoury, which this remake does not have |
+| `0x0040D6BD` | weapon 46's impact arm | **recorded**: it spawns a `Spider` for the firing player ([`22` §9.4.2](22-combat-and-visibility.md)), and no placed unit in the 155-mission corpus carries a weapon above 29. Reachable only through the campaign armoury, and the remake's shop, like the engine's forward stepper, lists no weapon id from 20 up (`CampaignHost.CATALOGUE_ID_MAX`) — the `ammo` cheat lifts the tech band, not that bound |
 | `0x004130E6` | `aPlayPlatformSequence` | **recorded**: it rebuilds for the unit the *interface* has selected (`0x00471F70`), and `core` owns no selection — that is `game`'s. Guessing the rider instead would be a different rule, not the engine's |
 | `0x004149C7` | the **spore hatch** `0x004147D0` — *not* `FixedStatue`, which was a wrong routine boundary ([`22` §9.4.3](22-combat-and-visibility.md)) | **recorded**: the site is not a bare rebuild. It follows `aDeleteLand` and an `aGenerateUnitElement` that spawns a unit of the type the LCL command supplies — `Spores`' third argument, or the constant 50 from `MoveSpores`. Only two commands reach it. `Spores` -- one shipped mission, `_C_174`, which the cache carries -- is implemented since 2026-09-24 with its three-in-fifteen draw, its box search and its fog rebuild for player 0 ([`20` §7.4](20-lcl-language.md)); `MoveSpores` has no shipped call |
 | `0x0046F144` | `aExecuteWarp` | **recorded**: `MoveMap` computes the warp overlay and nothing consumes `STATE_WARP` — there is no execute path to hang it on yet |
 | `0x00457926` | `aMissionControl`'s GUI build | **recorded**: four interface-driven call sites. `game` redraws its HUD without asking `core`, and folding this in would make a draw mutate the rules |
-| `0x00478DE4` | `aTransferUnitFromPoolToMap` | **recorded**: the unit pool is the campaign layer's ([`27`](27-campaign.md)), which this remake does not have |
+| `0x00478DE4` | `aTransferUnitFromPoolToMap` | **implemented** at the end of `World.deploy_from_pool` since the campaign layer landed ([`27`](27-campaign.md)); this row read "recorded" while the remake had no unit pool |
 
-Two of the three implemented are inert on `_C_140` and one is not reachable
+Of the three first implemented, two are inert on `_C_140` and one is not reachable
 from it at all: replaying the mission to its end through `core` gives a
 byte-identical canonical hash with the elevator arm and the one-shot on and
 off (`4b0d4bd7…` either way), because its script drives no elevator and its
@@ -1223,7 +1223,7 @@ into an expression:
 
 * **`WALK_SECONDS_PER_STEP` = `FRAMES_PER_FIELD / FRAMES_PER_SECOND` = 0.3 s.**
   Derived, not chosen. What *is* chosen is that
-  `AIPlayback.STEP_SECONDS` became a **floor** rather than the whole rule: an
+  `AIPlayback.STEP_SECONDS` (now `EventPlayback.STEP_SECONDS`) became a **floor** rather than the whole rule: an
   event may ask for longer, and a move asks for its walk, because at the
   engine's own pace a move of more than one field outlasts the old fixed
   window and the next event's rebuild would cut the walk in half. `skip()`
@@ -2572,7 +2572,7 @@ a pointer:
   the view put it -- the same call the two-finger parallel drag already makes.
 * **The ground overlay's hover gate is off.** `GroundSprites.refresh` draws the
   movement dots and the target bands only while the pointer stands on a legal
-  cell ([`43` §3](43-battle-interface.md)); a finger stands nowhere, so
+  cell ([`43` §3](43-battle-hud.md)); a finger stands nowhere, so
   selecting a soldier showed no reachable set at all and a destination had to be
   guessed at. Under touch the gate is lifted and the set is the selection's own.
 * **The synthetic pointer leaves the screen when the finger does.** A `Button`

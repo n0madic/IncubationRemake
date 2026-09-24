@@ -10,14 +10,46 @@ The game directory is read-only. All output goes to `tools/out/`.
 
 ```
 inclib/          shared library code
+  formats
     binio.py       little-endian Reader; the u32-length-prefixed string convention
     png.py         minimal PNG writer (8-bit indexed and 24-bit truecolour)
+    bmp.py         8-bit Windows BMP decoder for the shipped screen art
     palette.py     .pal loader (Windows BMP colour tables)
     liblib.py      .LIB shape-library parser
     lev.py         .lev battle-map parser
+    lcl.py         LCL codec, tokenizer, parser and AST
+    info.py        DATA/Info.lcl balance tables as typed records
+    brieftext.py   briefing and info text reader (docs/24)
+    language.py    the languages the engine knows
     visn.py        VISN texture codec
     prototyp.py    prototyp.bin geometry decoder (command streams, meshes)
+    overdraw.py    which of two coplanar faces of one prototype the engine shows
+    charisma.py    shared primitives for the .cho/.cha streams
+    charisma_tables.py  the four Charisma name selectors (docs/40 7.2)
+    pose.py        V100Part::Update: a track, a bone, a matrix
     pe.py          PE reader: sections, resources, and reads by virtual address
+  engine arithmetic
+    eng3d.py       the engine's fixed-point geometry (TRIG/ATN tables, Q14 matrix)
+    rng.py         ARandom's two streams, and CRandom
+    footprint.py   0x0042F410: the control-map cells a placed object stands on
+    ctrlmap.py     the transient objects a control-map cell owns
+    allowance.py   aGetMovePoints (docs/10 5.5)
+  executable models
+    lcl_runtime.py the LCL interpreter (docs/20)
+    combat.py      line of sight, visibility and combat (docs/22)
+    movemap.py     aBuildMoveMap (docs/23 7)
+    ai.py          the computer's turn (docs/23)
+    turn.py        the turn and the hand-over (docs/25)
+    interact.py    aExecuteUse and its gate (docs/26)
+    campaign.py    the campaign layer (docs/27)
+    sound.py       the sound layer (docs/28)
+    blob_creators.py  the blob creators no recipe explained (docs/28 7.6.1)
+  remake cache
+    cache.py       manifest, staging, validation, atomic publish; CONVERTER_VERSION
+    convert.py     one mission and its transitive assets as portable data
+    script.py      one mission script as portable data
+    charisma_cache.py  bodies and clips as portable data
+    check.py       the result collector the pipeline --check CLIs share
 
 lcl_decode.py         decode/encode .lcl and .gcl scripts
 lcl_parse.py          tokenize and parse LCL into an AST (semantics: docs/20)
@@ -66,6 +98,34 @@ seq_parse.py          verify and print the hard-coded sequence manifest: logical
                       per-arm checks pin each part's directory, stems and camera
                       to aSetSeqPlayerVideoPart itself (docs/41)
 
+info_parse.py         read DATA/Info.lcl as the game-balance tables (docs/21)
+charisma_tables.py    extract and check the Charisma name selectors (docs/40 7.2)
+presentation_tables.py pin the mission's presentation layer to Incubation.exe (docs/42)
+hud_tables.py         verify the battle interface against the game and its art (docs/43)
+language_tables.py    pin the engine's language switch chain
+pe_exports.py         list the shipped binaries' PE export tables against the
+                      committed listings
+
+lcl_runtime.py        run an executable model over the corpus (--check):
+turn_runtime.py         the LCL interpreter (docs/20), the turn (docs/25),
+combat_runtime.py       combat and visibility (docs/22), interaction (docs/26),
+interact_runtime.py     the move map and the AI turn (docs/23), the campaign
+movemap_runtime.py      (docs/27)
+ai_runtime.py
+campaign_runtime.py
+remake_convert.py     convert missions and their assets into the remake's cache
+                      (docs/92 10.1)
+verify_embedded_cache.py  require an Android APK to carry every byte its embedded
+                      cache declares (run by make build-android)
+
+movemap_gold.py       native captures through dbgcall -- each needs Wine and a
+turn_gold.py            copy of the game, and each --check fails without a
+ai_gold.py              capture; see dbgcall/README.md, "The gold tools"
+blob_gold.py
+presentation_gold.py
+hud_probe.py
+dbgcall_patches.py    generate dbgcall --poke/--code arguments for Incubation.exe
+
 agent_client.py       drive a running remake build over its control server:
                       state, screenshot and commands, answered while a command
                       is still running (docs/92 7.16)
@@ -73,38 +133,19 @@ agent_client.py       drive a running remake build over its control server:
 
 ## Corpus checks
 
-Each tool can validate itself against 100% of its format's corpus. These are the
-acceptance criteria for the specs in `docs/`; run them after any change.
+Each format's check is its parser consuming 100% of that format's files, and
+every check fails on an empty corpus. These are the acceptance criteria for the
+specs in `docs/`; run them after any change under `tools/`:
 
 ```bash
-python3 tools/lcl_decode.py       gog_incubation -o tools/out/lcl   # 178 files
-python3 tools/lcl_parse.py        gog_incubation --check            # 177/177
-python3 tools/lev_parse.py        gog_incubation --check            # 155/155
-python3 tools/lib_extract.py      gog_incubation --check            #  58/58
-python3 tools/img_tables.py       gog_incubation                    #  42/42
-python3 tools/font_render.py     --check gog_incubation            #   4/4 fonts
-python3 tools/verify_3d_indices.py --root gog_incubation            # 31 check kinds
-python3 tools/prototyp_parse.py   --check --root gog_incubation      # 26072/26072
-python3 tools/visn_decode.py      gog_incubation --check            # 723/723
-python3 tools/cho_parse.py        --check gog_incubation            # 237/237
-python3 tools/cha_parse.py        --check gog_incubation            # 245/245
-python3 tools/cha_parse.py --verify-convention gog_incubation        # quaternion order
-python3 tools/combat_tables.py   --check gog_incubation             # 27 checks, 48/48 patterns
-python3 tools/trace_names.py     --check gog_incubation             # 324 + 146 names
-python3 tools/sav_tables.py      --check gog_incubation             # 69 checks
-python3 tools/sav_parse.py       gog_incubation --selftest          # 31 map sizes
-python3 tools/typ_parse.py       --check gog_incubation             # 18 checks
-python3 tools/ai_tables.py       --check gog_incubation             # 77 checks
-python3 tools/brief_parse.py     --check gog_incubation             # 55 checks
-python3 tools/turn_tables.py     --check gog_incubation             # 85 checks
-python3 tools/interaction_tables.py --check gog_incubation          # 109 checks
-python3 tools/campaign_tables.py    --check gog_incubation          # 237 checks
-python3 tools/blob_tables.py        --check gog_incubation          # 259 checks
-python3 tools/blob_runtime.py       --selftest                      # 78 kinds, 74 arms
-python3 tools/interface_tables.py   --check gog_incubation          # 39 checks
-python3 tools/seq_parse.py          --check gog_incubation          # 75 checks, 130/130
-python3 tools/charisma_selftest.py                                   # synthetic reader paths
+make check-formats
 ```
+
+The `Makefile`'s `check-formats` target is the one list of checks and their
+invocations — the game root's argument position varies per tool, so copy an
+invocation from there rather than guessing. A few inspection aids have no
+corpus check: `3dw_parse.py`, `dir3di_parse.py`, `din_parse.py`,
+`pe_resources.py` and `charisma_dump.py`.
 
 ## Extracting assets
 

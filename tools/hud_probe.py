@@ -71,6 +71,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import movemap_gold as gold                                        # noqa: E402
 from inclib import liblib                                          # noqa: E402
+from inclib.cache import is_within                                 # noqa: E402
 from inclib.check import Checker                                   # noqa: E402
 
 LOG = logging.getLogger("hud_probe")
@@ -277,7 +278,7 @@ def decode(lit: list[list[int]], masks: dict[int, frozenset[tuple[int, int]]]
 
 def capture(game_copy: Path, dbgcall: Path, out: Path, attempts: int) -> int:
     repo = Path(__file__).resolve().parent.parent
-    if repo in game_copy.resolve().parents or game_copy.resolve() == repo:
+    if is_within(game_copy, repo):
         raise ProbeError(
             f"{game_copy} is inside this repository; the probe must run "
             f"from a copy of the game, never from gog_incubation/")

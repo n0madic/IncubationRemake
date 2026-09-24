@@ -70,6 +70,7 @@ from inclib.allowance import (  # noqa: E402
     EQUIP_SERVO_SYSTEM,
     movement_allowance,
 )
+from inclib.cache import is_within  # noqa: E402
 from inclib.check import Checker  # noqa: E402
 from inclib.info import InfoError, load_info  # noqa: E402
 from inclib.movemap import (  # noqa: E402
@@ -2146,7 +2147,7 @@ def _dump(payload: dict[str, Any], out: Path) -> None:
 def capture(game_copy: Path, dbgcall: Path, root: Path, out: Path,
             attempts: int) -> int:
     repo = Path(__file__).resolve().parent.parent
-    if repo in game_copy.resolve().parents or game_copy.resolve() == repo:
+    if is_within(game_copy, repo):
         raise CaptureError(
             f"{game_copy} is inside this repository; the capture must run "
             f"from a copy of the game, never from gog_incubation/")

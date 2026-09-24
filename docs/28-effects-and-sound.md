@@ -2160,8 +2160,8 @@ store lands on.
    shipped data reaches build `RzRxRy`" but "the other builder is never
    called by anything".
 
-2. **What the five repeating arms look like in play, with more than one cell
-   in the band.** §8.1.3 decodes them out of the instructions, and on
+2. ~~**What the five repeating arms look like in play, with more than one cell
+   in the band.**~~ **Closed** — the last part, the arc, on 2026-09-12 (below). §8.1.3 decodes them out of the instructions, and on
    2026-09-12 two of them — weapon 11's and weapon 41's muzzle arms — were
    additionally fired *as shots* inside the running original, alongside
    weapon 7, whose arm is not one of the five: `blob_gold.py`'s `fight_`

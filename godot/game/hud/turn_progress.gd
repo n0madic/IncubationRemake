@@ -15,11 +15,11 @@ extends Control
 ## burns from the first frame of the turn -- which is what the shipped game
 ## shows the moment the aliens take over.
 ##
-## **It counts nothing itself.** [method tally] is a pure function of the world
-## and of which events the replay has already played, because `core` decides
-## the whole computer turn before any of it is drawn: the world holds every
-## spent movement point from the first frame, and a bar read straight off it
-## would be full before the first alien moved.
+## **It counts nothing itself.** [method tally] is a pure function of the
+## picture's world, because `core` decides the whole computer turn before any
+## of it is drawn: the truth holds every spent movement point from the first
+## frame, and a bar read straight off it would be full before the first alien
+## moved.
 
 ## The last fill drawn. `0x00522E18` -- the engine draws the larger of this and
 ## the new one, so a bar that shrinks takes a frame to do it.

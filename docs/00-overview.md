@@ -128,6 +128,22 @@ the other way round in [`29` §1.2](29-interface-contract.md); and
 its mode-0 test and its ratchet ([`23` §3.6](23-ai-system.md)) — a mislabelled
 line both executable models had inherited.
 
+**The eighth slice makes the picture a lagging mirror**
+([`100-slice-8-report.md`](100-slice-8-report.md)). `core` resolves a whole
+command — and the whole computer turn — before it returns, and three slices
+of presentation defects had each been fixed by holding one field of that
+world back until the animation caught up; eighteen such holds by then. The
+slice removes the cause: `game` draws a clone of the world advanced one event
+delta at a time, and every reader of what is on screen goes through
+`SliceMain.shown()`.
+
+**The ninth slice is everything between missions** — the splash, the title,
+the menu, the intro, the dialogue scenes, both endings, the credits, the
+briefing's typewriter and voice-over, the loading screen and the base's
+fly-in: [`101-slice-9-report.md`](101-slice-9-report.md). The game ships no
+video; every cutscene is a real-time Charisma scene, and the slice corrected
+[`41` §2/§4](41-sequence-player.md) on how they are played.
+
 **Nothing the player can feel is left open in the remake.** The staged
 backlog that tracked it (`102`, compiled 2026-09-12) was retired on 2026-09-13
 with every buildable, verifiable and decidable item closed where it lived —
@@ -141,7 +157,9 @@ matrix and the 16× bone-to-mesh scale ([`40` §11](40-charisma-model-animation.
 [`96` §11](96-slice-4-report.md)), `_C_156`'s fourth teleporter exit,
 the `technical` box's cap and `Batteries` ([`26` §10](26-interaction.md)), and
 why locations 3 and 6 load each other's upgrade map
-([`27` §10](27-campaign.md)). None blocks anything; each entry records what
+([`27` §10](27-campaign.md)), and three readings of the deployment turn that
+want a frame or a probe of the original ([`43` Open
+questions](43-battle-hud.md) 2–4). None blocks anything; each entry records what
 was tried — read it before spending an hour.
 
 ---
@@ -177,7 +195,7 @@ expansion in the remake's campaign chooser.
 
 ### Behaviour, not formats
 
-Eight specs in the set describe no file at all.
+Ten specs in the set describe no file at all.
 [`22-combat-and-visibility.md`](22-combat-and-visibility.md) is the arithmetic
 between the files: how `Info.lcl`'s stat columns and `.lev`'s unit and cell
 records turn into a resolved shot and into fog of war.
@@ -208,12 +226,19 @@ must localise.
 [`41-sequence-player.md`](41-sequence-player.md) is the compiled story-sequence
 manifest and player lifecycle: logical ids, successive video parts, actors,
 cameras, timing, completion, and the campaign trigger boundary.
-These eight behaviour specs exist because a loader
+[`42-mission-presentation.md`](42-mission-presentation.md) is how a mission
+is shown while it is played: the camera, the animation drivers and their
+speeds, the shot's stages, the idle scheduler and set-piece staging.
+[`43-battle-hud.md`](43-battle-hud.md) is the battle interface's pixel layout,
+which `29` leaves out on purpose.
+These ten behaviour specs exist because a loader
 that reads every byte of every format still cannot play a turn — nor be played
 against, nor be played through. `combat_tables.py`, `ai_tables.py`,
 `turn_tables.py`, `interaction_tables.py`, `campaign_tables.py`,
-`blob_tables.py`, `interface_tables.py`, `seq_parse.py` and `trace_names.py` are
-their checks.
+`blob_tables.py`, `interface_tables.py`, `seq_parse.py`,
+`presentation_tables.py`, `hud_tables.py` and `trace_names.py` are their
+checks, beside the executable models the `Makefile`'s `check-formats` runs
+(`*_runtime.py --check`).
 
 The game-logic research programme is complete at its documented
 **verified-static** boundaries:
@@ -342,15 +367,22 @@ All tools are Python 3, dependency-free, and live in `tools/`. Shared code is in
 | `inclib/lev.py` | `.lev` battle-map parser |
 | `inclib/pe.py` | PE reader: sections, resources, and reads by virtual address |
 
-Corpus checks — every tool has one, and they are the acceptance criterion for
-each spec:
+This is the core of the byte-level layer; `inclib/` holds about thirty-five
+modules in all, including the executable models the behaviour specs are
+checked with. [`tools/README.md`](../tools/README.md) lists them.
+
+Corpus checks are the acceptance criterion for each spec. Every format parser
+has one; a few inspection aids (`3dw_parse.py`, `dir3di_parse.py`,
+`din_parse.py`, `pe_resources.py`, `charisma_dump.py`) do not. The complete
+list is the `Makefile`'s `check-formats` target (`make check-formats`); a
+sample:
 
 ```bash
 python3 tools/lev_parse.py    gog_incubation --check     # 155/155
 python3 tools/lib_extract.py  gog_incubation --check     #  58/58
 python3 tools/img_tables.py   gog_incubation             #  42/42
 python3 tools/verify_3d_indices.py --root gog_incubation # .3DW/.dir/.din
-python3 tools/lcl_decode.py   gog_incubation -o out/lcl  # 178 files
+python3 tools/lcl_decode.py   gog_incubation -o tools/out/lcl  # 178 files
 python3 tools/combat_tables.py --check gog_incubation    # 27 checks, 48/48 patterns
 python3 tools/trace_names.py   --check gog_incubation    # 324 + 146 names
 python3 tools/sav_tables.py   --check gog_incubation    # 69 checks
@@ -381,13 +413,13 @@ per-format and must not be interpreted as data.
 ### What is still open
 
 Each spec ends with an **Open questions** section, and closed entries are kept
-in place with the evidence that closed them rather than deleted. **33 items are
+in place with the evidence that closed them rather than deleted. **35 items are
 still open:**
 
 | Spec | Open | What they are |
 |---|---|---|
 | [10](10-lev-mission-format.md) | 4 | five unit bytes with no accessor in either binary, one all-zero block field, one vestigial header byte, one runtime-only array |
-| [11](11-save-game-format.md) | 3 | fifteen offsets that no code compares against a literal and the hard-coded slot 32 — both narrowed by five real campaign saves but not named; the third needs a multiplayer save. ViewPlayer is now **closed**: the block's 1024-byte remainder is the loaded `vp.pal`. The **scoreboard is closed too** ([`98` §5](98-slice-6-report.md)): its four "unknown" fields are the campaign halves of four pairs — kills, units lost, units lost to an enemy and score, each `+0x00`/`+0x08`/`+0x10`/`+0x18` beside its `+0x04`/`+0x0C`/`+0x14`/`+0x1C` — written by `0x0043B810`, `0x0043B8D0`, `0x0043B860` and the scorer, and printed under `Txtmod_d`'s own "In Mission" / "In Campaign" headings. The slot question is narrowed to 32 and 33: slot 31 is the mission-entry snapshot |
+| [11](11-save-game-format.md) | 3 | fifteen offsets that no code compares against a literal and the hard-coded slot 32 — both narrowed by six real campaign saves but not named; the third needs a multiplayer save. ViewPlayer is now **closed**: the block's 1024-byte remainder is the loaded `vp.pal`. The **scoreboard is closed too** ([`98` §5](98-slice-6-report.md)): its four "unknown" fields are the campaign halves of four pairs — kills, units lost, units lost to an enemy and score, each `+0x00`/`+0x08`/`+0x10`/`+0x18` beside its `+0x04`/`+0x0C`/`+0x14`/`+0x1C` — written by `0x0043B810`, `0x0043B8D0`, `0x0043B860` and the scorer, and printed under `Txtmod_d`'s own "In Mission" / "In Campaign" headings. The slot question is narrowed to 32 and 33: slot 31 is the mission-entry snapshot |
 | [20](20-lcl-language.md) | 0 | all eleven closed; one residual **UNVERIFIED** note lives inside item 5 (whether `GUI_SetButton`'s `PressDown` values 1 and 2 were meant to differ) |
 | [22](22-combat-and-visibility.md) | 0 | all five closed; the residue is *unnamed*, not unknown — the difficulty levels are pictures and the `special` enumerators are integer literals, and neither binary holds a matching string. The fourth was closed by **correcting its premise**: the fog rebuild at `0x004149C7` is the spore hatch's, not `FixedStatue`'s, and the type it spawns is an LCL argument (§9.4.3). The fifth — what the unit pool draws the clock-seeded stream for — is a **speech set** (§3.2): `aRandom(1, 6)` into `unit[+0x55]`, which no rule reads |
 | [23](23-ai-system.md) | 0 | all five closed; `+0x10` is fire / a mine / a shield, named by the models their makers insert; the cover score's out-of-bounds read is heap history and cancels in the maximiser; `aInitAISystem` does not exist; the planner and the fire routine share one twelve-value selector; and the loop's counters are a local and a parameter, which no mechanism in these binaries could have preserved |
@@ -402,7 +434,7 @@ still open:**
 | [40](40-charisma-model-animation.md) | 6 | enumerator names, the `J` animation family, the four synthetically-validated reader branches, and whether the −Y authored forward (§5.4) is reconciled by a rotation or by a mirror |
 | [42](42-mission-presentation.md) | 0 | none. The two §8.3 opened on 2026-09-06 — the rotating statue's joint word, `FootBridge2`'s block — closed the same day by replaying the routines' box search on the shipped maps (`99` §10.1): `L014EH00` with one part on the three `Statue2` cells, `L069EI00` on one of each group's two cells. The two it carried for a day before that — the glow's lifecycle and what a ground-fire removal costs — are closed in §12 with their evidence (`97` §38), and the six before them too: the pose after detach is measured (bind on the next step, the last frame held before it), the clip length is the first movement's last key time, state 3 is the shield, the four set pieces are transcribed, the start slot's class is `KeyFramedAnimationInterface`, and the starter's type search never advances so the draw decides |
 | [41](41-sequence-player.md) | 0 | all closed. The ninth slice ([`101`](101-slice-9-report.md), 2026-09-08) corrected §2/§4: the "camera/rate string" is a **CD track program** (`"9,30"` loops track 9; `Seq_5`'s empty one keeps `Seq_4`'s), the cameras are parts named `Cam<n>` picked by `Switch`, `Focus` is a seven-preset table scaled by the viewport height, shots play one after another, and the forward axis is measured over 520 poses. The camera bone's **roll** closed on 2026-09-09 against the scenes' own vertical: the lens' up lies within 46° of the world's in 240 of 260 poses, which a quarter or a half turn in the bone frame would put at zero. Speech/subtitles stay closed negatively — and the cutscene **CD tracks are the speech** ([`28` §6.1](28-effects-and-sound.md)). The frame-0 note question (§7 item 2) closed 2026-09-13 (§3.1): one update of `0x0047F6A0` is `Simulate`, then the `Cam<n>` lookup, then the render, and the collector keeps a `t <= start` note while the clock reads exactly 0 — no frame is drawn through `Cam1` |
-| [43](43-battle-hud.md) | 1 | what keeps the hit-point digit off the original's screen — **narrowed on 2026-09-12**: `hud_probe.py` steps the overlay routine inside the live game and it blits `mp[hp]` over an unselected unit with points, so the gate is not in the overlay; what is left is a frame of the original in the software and the accelerated output modes. Two earlier ones went on the same day: the callback pointer `fcn.0047D600` stores is read only by `aAISystemControl`, so no blocking animation redraws the ground overlay (§3.1); and the watched player's screen is a seven-arm state machine on `[0x005229D4]` whose captions come from `txtmod_g` (`_ViewPlayers`) and `txtmod_h`, of which **the computer's turn is state 2 and prints nothing at all** — `alarm.wav` is the network game's "it is your turn" alert, gated on the game mode `[0x00509EE8]` being 2 (§7.3). The three decisions reading could not settle are closed: the campaign map's band badges are implemented (D6, 2026-09-12), the plate font is one, `font_0`, by the traced handles (D7, 2026-09-12), and the magnifier's `Data` info page (§5.2.1, 2026-09-08): the mode, the cursor, the click's three tests, the label out of the 126-byte type table at `0x0051C09D` and the box `230, 200, 180, 300` |
+| [43](43-battle-hud.md) | 3 | three readings of the deployment turn opened with §5.5 on 2026-09-13, each open until a frame or a probe of the original is taken: what the panel prints over a fresh pool record, whether `aKillUnit` rebuilds visibility on a take-back, and what a load with an emptied pool does at runtime. Question 1 — what keeps the hit-point digit off the original's screen — is **closed by decision** (2026-09-13): `hud_probe.py` steps the overlay routine inside the live game (23/23) and it blits `mp[hp]` as read, so what is left is compositing, which changes nothing the remake draws. Two more closed on the day they were opened: no blocking animation redraws the ground overlay (§3.1), and the watched player's screen is a seven-arm state machine on `[0x005229D4]` whose computer-turn state prints nothing, `alarm.wav` being the network game's alert (§7.3). The decisions reading could not settle — the campaign map's band badges (D6), the plate font `font_0` (D7), the magnifier's `Data` page (§5.2.1) and the panel's block offsets — are closed |
 | [60](60-lib-sprites.md) | 0 | none, since 2026-09-05: the blitter is `fcn.004475D0` in the module's own range and keys index 0 for every library, and the anchors are read only by the callers that subtract them — the overlay, the panel, the radar, the cursor — never by the columns or the pad ([`43` §3.4](43-battle-hud.md)) |
 | [70](70-img-tables.md) | 1 | the rounding rule that generated the sine table |
 

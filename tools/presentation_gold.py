@@ -81,6 +81,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import movemap_gold as gold                                     # noqa: E402
 import blob_gold                                                # noqa: E402
 from inclib import blob_creators, charisma, ctrlmap, eng3d      # noqa: E402
+from inclib.cache import is_within                              # noqa: E402
 from inclib.info import load_info_file                          # noqa: E402
 from inclib.charisma_tables import SelectorKey, SelectorTables  # noqa: E402
 from inclib.pe import PEFile                                    # noqa: E402
@@ -2492,7 +2493,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--game-copy and --dbgcall are required for a capture")
     repo = Path(__file__).resolve().parent.parent
     copy = args.game_copy.resolve()
-    if repo in copy.parents or copy == repo:
+    if is_within(copy, repo):
         parser.error(f"{copy} is inside this repository; the capture must "
                      "run against a copy of the game")
     return capture(args.game_copy, args.dbgcall, args.out, args.attempts, args.phase)

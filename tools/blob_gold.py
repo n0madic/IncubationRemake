@@ -62,6 +62,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import blob_tables as tables                                    # noqa: E402
 import movemap_gold as gold                                     # noqa: E402
+from inclib.cache import is_within                              # noqa: E402
 
 LOG = logging.getLogger("blob_gold")
 
@@ -7365,15 +7366,16 @@ def main(argv: list[str] | None = None) -> int:
         return run_checks(args.check, args.fixture)
     if not args.game_copy or not args.dbgcall:
         ap.error("--game-copy and --dbgcall, or --check")
-    if args.probe_startup:
-        return probe_startup(args.game_copy.resolve(), args.dbgcall,
-                             args.probe_startup)
     repo = Path(__file__).resolve().parent.parent
     copy = args.game_copy.resolve()
-    if repo in copy.parents or copy == repo:
+    # Before the startup probe too: it runs the game, which writes into the
+    # directory it is given.
+    if is_within(copy, repo):
         raise SystemExit(f"{copy} is inside this repository; the capture must "
                          "run from a copy of the game, never from "
                          "gog_incubation/")
+    if args.probe_startup:
+        return probe_startup(copy, args.dbgcall, args.probe_startup)
     save = copy / "Work" / "Saves2" / f"_{gold.CAPTURE_SLOT}_.sav"
     if not save.is_file():
         raise SystemExit(f"the copy needs {save}")

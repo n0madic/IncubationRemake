@@ -1320,14 +1320,19 @@ frame the command returns and never reach the fall at all. `_after_command`
 runs `UnitsView.build`, which frees every unit node and refuses to rebuild a
 record whose `hp` is zero unless the picture is already holding it -- and
 `core` kills a footbridge's riders **inside** `submit_move`, with nothing but
-their slots on the event, so `AIPlayback.casualties_of` (an outcome's
-`marker`, a reaction's, a mine blast's) finds none of them. The mover is one
+their slots on the event, so the replay's casualty extractor of the time
+(`AIPlayback.casualties_of`: an outcome's `marker`, a reaction's, a mine
+blast's) found none of them. The mover is one
 of the riders, since it is standing on the bridge, so its walk went with the
 rest: it vanished at the cell it set off from instead of walking to the one
 that killed it, and `_drop_riders` then lifted and tumbled nothing.
-`_mark_dying_by_script` runs **before** `_after_command` now, beside the
-mine's own hold, and takes the slots off the `foot_bridge` / `foot_bridge2`
-event (`SetpieceDriver.riders_of`). What made this hard to see is that the
+The fix of the day ran a `_mark_dying_by_script` **before** `_after_command`,
+beside the mine's own hold, taking the slots off the `foot_bridge` /
+`foot_bridge2` event (`SetpieceDriver.riders_of`). Since slice 8 neither
+exists: the picture is a lagging mirror ([`100`](100-slice-8-report.md)) that
+does not follow the landing while the set piece's queue runs, so the riders
+simply stand in it, and `SliceMain._drop_riders` tumbles the slots
+`riders_of` names with nothing held on their behalf. What made this hard to see is that the
 map's own aliens stand on the same walkway a few cells further along: a
 screenshot of the fall shows two armoured bodies on the bridge either way,
 and they are not the riders.
@@ -1347,9 +1352,9 @@ through `World.submit_move`, so no computer walk ran a `MoveUnit` at all and
 `_C_106`'s six bridges could not fall under its aliens. `AIContext` now
 carries the script and `AIPlan` fires it where the routine does -- after the
 walk's own passes, before the caller's charge and reactions -- with the
-outcome on the event under `script`; the replay presents it after the walk
-and `AIPlayback.casualties_of` reads the riders off it, which is the same
-extractor the whole replay is pre-marked with. Watched on `_C_131`: every
+outcome on the event under `script`; the replay presents it after the walk,
+and the riders are read off it by `SetpieceDriver.riders_of` as for the
+player's own walks. Watched on `_C_131`: every
 computer walk the replay shows raises the snapshot's `picture.script.count`
 by one (that field exists for this -- `_C_131`'s hook only reorders the
 aliens, so nothing else moves), and a jet-pack jump of the player's does the

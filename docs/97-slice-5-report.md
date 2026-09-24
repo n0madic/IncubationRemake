@@ -1558,7 +1558,7 @@ unit 4 stands 1600 high where unit 1 stands 2400 — and the burst reproduces.
 **Weapon 11 cannot be exercised from this save, and that is measurable rather
 than arguable.** Its pattern handler `0x0046B0D8` does not look for units: it
 marks a cell whose `+0x0B` action point is in 30..34, the multiplayer victory
-points of [`10` §4.6](10-lev-format.md). The same map read that gives the band
+points of [`10` §4.6](10-lev-mission-format.md). The same map read that gives the band
 gives the histogram — 389 cells at 0, six at 1, two at 12, two at 17, one at
 39 — and **none** in the band. So weapon 11 marks nothing whatever it is aimed
 at, its walk never runs, and the arc argument stays at zero. The phase is kept
@@ -3404,7 +3404,7 @@ right and the presentation did not follow them.
 | *(latent)* | the same arm read the weapon out of `world.unit_view(slot)`, which is the **post-turn** record: an alien killed by reaction fire after its own shot came back as an empty view and the arm returned with no presentation whatever |
 
 **There is no hit or death animation to add, and none was invented.**
-[`40` §7.2 / §7.2.1](40-charisma-models-and-animation.md) is explicit that the
+[`40` §7.2 / §7.2.1](40-charisma-model-animation.md) is explicit that the
 engine references exactly `M`, `S`, `F` and the one `M2` literal. Being hit is
 the pain-voice round robin plus the impact blob ([`28` §4.1, §8.1](28-effects-and-sound.md));
 dying is `aKillUnit` removing the record ([`22` §9.5](22-combat-and-visibility.md)).
@@ -3464,9 +3464,9 @@ engine sequence behind the hold; it is not a constant.)*
 
 **There is no engine number behind that 0.35.** `fcn.004055E0`'s callback halts
 the clip at the note and leaves it there; what puts `S` back is the 3D-view
-refresh, and that refresh rate is not recovered — [`40` §7.2](40-charisma-models-and-animation.md)
+refresh, and that refresh rate is not recovered — [`40` §7.2](40-charisma-model-animation.md)
 marks the `kind` 0 / `kind` 4 playback set-up UNVERIFIED. It is **not** the
-`int(len / 6) / 3` spin of [`40` §4.8](40-charisma-models-and-animation.md):
+`int(len / 6) / 3` spin of [`40` §4.8](40-charisma-model-animation.md):
 that one runs *while* the clip plays toward `BREAK` and is three or four
 iterations, not a wait after it. The hold lives in the state and not in
 `UnitsView` for a structural reason — a view holding the pose on its own clock
@@ -3649,7 +3649,7 @@ and never reaches its own peak at 30.
 13 of the 40 ids it covers, and its default makes none, so nothing appears at
 the target for the Assault Rifle and for every other conventional gun — only
 the `ricochet.wav` the sound switch selects. There is no hit, flinch or death
-animation to add either: [`40` §7.2.1](40-charisma-models-and-animation.md) is
+animation to add either: [`40` §7.2.1](40-charisma-model-animation.md) is
 that the engine references exactly `M`, `S`, `F` and one `M2` literal.
 
 ### 25.5 Verification
@@ -3734,7 +3734,7 @@ node itself, so nothing waits for another rebuild.
 `DEATH_LINGER_SECONDS = 0.7` is **the remake's number and there is no engine
 number behind it**: `aKillUnit` is a network message and `aRemoveUnitElement`,
 the object goes at once, and Charisma has no death clip to play instead
-([`40` §7.2.1](40-charisma-models-and-animation.md)). What the engine gives is
+([`40` §7.2.1](40-charisma-model-animation.md)). What the engine gives is
 the *order*, and that is what the hold restores. *(Corrected 2026-09-02: the
 object does go at once, but not into nothing — `aPlayFightAnimation` hides it
 and spawns a blood, debris, fire or flying-unit effect by species and class,
@@ -3767,7 +3767,7 @@ flash** at the moment a move event plays, and there are two longer windows it
 cannot reach.
 
 The root of all three is the same architectural fact, and it is not a defect:
-`core` decides the whole turn in one call ([`94`](94-slice-4-report.md)), so
+`core` decides the whole turn in one call ([`95`](95-slice-3-report.md)), so
 from the instant `submit_end_turn` returns, the world holds every unit at the
 position it *ends* the turn on. Every rebuild during the replay therefore draws
 a unit that has not walked yet at the place it is about to walk to.

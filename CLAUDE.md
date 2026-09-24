@@ -167,8 +167,16 @@ is a bytecode program the engine executes in place, including a BSP tree.
 - `footprint` — `0x0042F410`'s four-probe sweep: which control-map cells a
   placed special object stands on, which is `CrushWall`'s footprint
   ([`42` §8.2](docs/42-mission-presentation.md))
-- `script`, `lcl_runtime`, `turn`, `combat`, `interact`, `ai`, `blob_*` — the
-  executable models of the interpreter, the turn, combat, interaction and effects
+- `overdraw` — which of two coplanar faces of one prototype the engine shows
+  ([`31`](docs/31-prototyp-geometry.md)); the converter bakes its face order
+- `lcl_runtime`, `turn`, `combat`, `interact`, `movemap`, `ai`, `campaign`,
+  `sound`, `blob_creators` — the executable models of the interpreter, the
+  turn, combat, interaction, the move map, the AI turn, the campaign, the sound
+  layer and the effect creators; `allowance` and `ctrlmap` are pieces they
+  share
+- `cache`, `convert`, `script`, `charisma_cache` — the remake cache: manifest
+  and atomic publish (`cache` holds `CONVERTER_VERSION`), and one mission, its
+  script and its bodies as portable data
 
 Parsers raise a typed error (`ParseError`, `LevError`, `LibError`,
 `PaletteError`, `VisnError`) instead of returning partial results, so a corpus
