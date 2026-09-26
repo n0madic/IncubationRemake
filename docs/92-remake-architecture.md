@@ -2663,7 +2663,21 @@ local (Godot's export credentials or the `GODOT_ANDROID_KEYSTORE_RELEASE_*`
 environment settings). `make build-ios` deliberately refuses to
 start until a real Apple Team ID is configured locally and full Xcode is
 installed; neither a fabricated signing identity nor a provisioning profile is
-kept in this repository. Every build goes to ignored `godot/export/`.
+kept in this repository. `make build-web` exports a single-threaded Web build
+(`index.html` plus its `.wasm` and `.pck`) to `godot/export/web/`; single-threaded
+so that any static host serves it without the COOP/COEP headers a threaded build
+needs. It has to be served over HTTP, not opened as a file. A browser has no file
+system to hold a user cache, so a `NO_CACHE=1` Web build exports but has nothing
+to run. Checked once in Chrome (2026-09-26): shell, Instant Action, deployment and
+the first turn run with no engine error, and a WebGL wrapper counting every
+draw and blit into an incomplete framebuffer counts none. The WebGL warning
+`Framebuffer is incomplete: Attachment has zero size`, repeated every frame,
+appears only when the page's window is 0×0 (a hidden browser pane): the
+adaptive canvas policy sizes the canvas to the window, and Emscripten's
+offscreen framebuffer, which `emscripten_webgl_commit_frame` blits from,
+follows it down to zero. It comes from the engine's web layer, not from a
+viewport of the game; with a window of any size it does not appear. Sound and
+saves (IndexedDB) were not exercised. Every build goes to ignored `godot/export/`.
 Every `build-*` first brings all campaign and Instant Action data in ignored
 `godot/data/cache` up to date (`make data`), re-imports and requires the data to
 be kept before exporting (§3.2). `make build-android` then requires every cache

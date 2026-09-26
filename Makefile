@@ -27,7 +27,7 @@ endif
 .PHONY: help check-godot check-formats check-cache extract fixtures data \
 	data-force _data-key \
 	test-godot test-touch test-export test build build-macos build-windows \
-	build-linux build-android build-ios
+	build-linux build-android build-ios build-web
 
 help:
 	@printf '%s\n' \
@@ -48,6 +48,7 @@ help:
 		'  make build-linux    Export a Linux x86_64 executable.' \
 		'  make build-android  Build an Android APK (ARMv7 + ARM64).' \
 		'  make build-ios      Export an iOS Xcode project; configure a real Apple Team ID first.' \
+		'  make build-web      Export a single-threaded Web build to godot/export/web/ (serve it over HTTP).' \
 		'' \
 		'Every build-* carries the converted game data inside its own package (make data runs first).' \
 		'Such a build contains Blue Byte data: it is for your own use, never for publishing.' \
@@ -245,3 +246,9 @@ build-ios: check-godot $(BUILD_DATA)
 		echo 'build-ios: Xcode is required; Command Line Tools alone cannot export iOS.' >&2; exit 1; \
 	}
 	$(call godot_export,iOS,Incubation-remake-ios.zip)
+
+# A browser has no file system to hold a user cache, so a NO_CACHE=1 web build
+# exports but has no data to run.
+build-web: check-godot $(BUILD_DATA)
+	mkdir -p $(GODOT_DIR)/$(EXPORT_DIR)/web
+	$(call godot_export,Web,web/index.html)

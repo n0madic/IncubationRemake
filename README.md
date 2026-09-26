@@ -83,7 +83,7 @@ next to the `Makefile` and every `make build-…` keeps the pack.
 
 ```bash
 make build            # the host platform
-make build-macos      # also: build-windows, build-linux, build-android, build-ios
+make build-macos      # also: build-windows, build-linux, build-android, build-ios, build-web
 ```
 
 Every build carries the converted data inside its own package: inside the
