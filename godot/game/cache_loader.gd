@@ -1,36 +1,37 @@
 class_name CacheLoader
 extends RefCounted
 
-## The only code in the remake that touches the filesystem.
+## The only code in the remake that decides *which* cache is read.
 ##
-## It reads `user://caches/active.json`, then the cache that names, and verifies
-## the **whole** inventory -- every declared path present, the right size and
-## the right SHA-256 -- before anything is loaded from it.  [method open_active]
-## does that on every call, so "a partial cache is never accepted" is not a
-## statement about the happy path.
+## [method locate] walks the sources in a fixed order and opens the first that
+## exists; a source that exists but does not check out is refused by name
+## rather than skipped, so a broken cache is never papered over by another:
 ##
-## **What one sweep costs, measured.**  A campaign publish is 100 MB over 2 689
-## files and a pass takes **342 ms** (`bench.gd`, `verify_us`); the slice's own
-## six-mission cache is 42 MB.  The docstring here used to say "roughly two
-## megabytes, a few milliseconds", which was true of the first slice's cache and
-## is out by a factor of fifty for a cache the campaign can be played through.
-## So a *caller* that opens the cache many times must open it once and keep the
-## answer -- `tests/cache_fixture.gd` does, and [SliceMain] no longer sweeps a
-## second time over what this already swept.  The publish is atomic,
-## content-addressed and under a lock (`inclib/cache.py`), so a half-written
-## cache is never what `active.json` names; what the sweep still catches is
-## damage **after** publication -- a truncated copy between machines, a deleted
-## file, a bad disk.
+## 1. `--cache=DIR` -- development: force a directory, whatever else is there;
+## 2. `res://data/cache` -- the data a build carries in its own package. The
+##    converter writes `godot/data/cache` with a keep-importer sidecar beside
+##    each PNG/WAV/OGG and the presets take the JSON documents, so an export
+##    puts the directory into the PCK (or the APK, or the IPA) byte for byte;
+## 3. `user://caches/<id>` named by `user://caches/active.json` -- what the
+##    player converts themselves for a build made with `NO_CACHE=1`;
+## 4. `res://generated/cache` -- the development fixtures.
 ##
-## Refusal is by name, never by loading something almost right:
-## `active.json` absent means first run; a `cache_schema_version` or
-## `converter_version` that is not this build's is refused; and any inventory
-## entry that does not verify is refused.
+## The bundled data comes before the published cache so that a stale
+## `user://` cache from an earlier build cannot shadow the data a build ships.
 ##
-## The converter is a CLI in this slice.  docs/92 section 9 defers the Python
-## packaging and section 10.1 only asks that the converter be pointed at an
-## installation, so the game consumes a published cache and prints the command
-## to run when there is none.
+## **Start-up checks shape, not bytes.**  [method quick_check] refuses a cache
+## whose schema or converter version is not this build's, and any inventory
+## entry that is missing or has the wrong length -- a truncated copy, a
+## deleted file, a package that imported a file instead of keeping it -- and
+## reads no data to do it.  The full sweep, [method verify], also recomputes
+## every SHA-256: 342 ms over a 100 MB campaign publish (`bench.gd`,
+## `verify_us`) and about two and a half times that for a 250 MB cache with a
+## language pack, paid on every start and every language switch, to catch the
+## one fault the quick check cannot -- bytes damaged at an unchanged size.  The
+## converter verifies every file when it writes the cache, so the full sweep
+## runs only on request (`--verify-cache`) and in the suites.
+##
+## Refusal is by name, never by loading something almost right.
 
 ## Must match `inclib/cache.py`.
 const CACHE_SCHEMA_VERSION: int = 1
@@ -39,6 +40,14 @@ const CONVERTER_VERSION: String = "0.46.0"
 const CACHES_DIR: String = "user://caches"
 const ACTIVE_NAME: String = "active.json"
 const MANIFEST_NAME: String = "manifest.json"
+## The data a build carries in its own package (`make data`, docs/92 10.1).
+const BUNDLED_CACHE: String = "res://data/cache"
+## Where a development run finds the same bytes a build carries.
+const DEV_CACHE: String = "res://generated/cache"
+## `--cache=DIR` opens that directory and nothing else.
+const CACHE_ARG: String = "--cache="
+## `--verify-cache` makes the start-up check the full SHA-256 sweep.
+const VERIFY_ARG: String = "--verify-cache"
 
 ## What the game prints when there is no cache.  A diagnosable first run
 ## (docs/92 section 9) means naming the command, not just the failure.
@@ -74,27 +83,14 @@ static func active_cache_dir(caches_dir: String = CACHES_DIR) -> String:
 	return "%s/%s" % [caches_dir, cache_id]
 
 
-## Every reason to refuse this cache; empty means it is good.
+## Every reason to refuse this cache; empty means it is good.  The full
+## sweep: every file is read and its SHA-256 recomputed.
 static func verify(cache_dir: String, manifest: Dictionary) -> PackedStringArray:
-	var problems: PackedStringArray = PackedStringArray()
-	if manifest.is_empty():
-		problems.append("no %s; it is not a cache" % MANIFEST_NAME)
-		return problems
-	if DictRead.as_int(manifest.get("cache_schema_version", -1)) \
-			!= CACHE_SCHEMA_VERSION:
-		problems.append("cache schema %s != %d"
-			% [manifest.get("cache_schema_version", "-"), CACHE_SCHEMA_VERSION])
-	if DictRead.as_string(manifest.get("converter_version", "")) \
-			!= CONVERTER_VERSION:
-		problems.append("converter %s != %s"
-			% [manifest.get("converter_version", "-"), CONVERTER_VERSION])
-	# **A cache already refused by name is not swept.**  The two tests above
-	# refuse the whole cache, so the sweep below could only add per-file noise
-	# to a message that is already decided -- and a cache another converter
-	# built is *expected* to differ file by file.  It is not free: the sweep is
-	# 342 ms over a 100 MB campaign publish, paid on every start-up that finds
-	# a stale cache.  The absent-manifest branch above already returned early
-	# for the same reason; this is the rest of that rule.
+	var problems: PackedStringArray = _document_problems(manifest)
+	# **A cache already refused by name is not swept.**  A missing manifest or
+	# a wrong version refuses the whole cache, so the sweep below could only add
+	# per-file noise to a message that is already decided -- and a cache
+	# another converter built is *expected* to differ file by file.
 	if not problems.is_empty():
 		return problems
 	var inventory: Array = DictRead.as_array(manifest.get("inventory", []))
@@ -117,20 +113,97 @@ static func verify(cache_dir: String, manifest: Dictionary) -> PackedStringArray
 	return problems
 
 
+## Every reason to refuse this cache that can be found without reading its
+## files: the versions, and each inventory entry's presence and length.
+static func quick_check(cache_dir: String, manifest: Dictionary) \
+		-> PackedStringArray:
+	var problems: PackedStringArray = _document_problems(manifest)
+	if not problems.is_empty():
+		return problems
+	var inventory: Array = DictRead.as_array(manifest.get("inventory", []))
+	if inventory.is_empty():
+		problems.append("the manifest declares no files")
+	for entry: Variant in inventory:
+		var record: Dictionary = DictRead.as_dict(entry)
+		var rel: String = DictRead.as_string(record["path"])
+		var file: FileAccess = FileAccess.open(cache_dir + "/" + rel,
+			FileAccess.READ)
+		if file == null:
+			problems.append("%s: missing" % rel)
+			continue
+		var length: int = file.get_length()
+		if length != DictRead.as_int(record["size"]):
+			problems.append("%s: %d bytes, expected %d"
+				% [rel, length, DictRead.as_int(record["size"])])
+	return problems
+
+
+## Opens the cache in `cache_dir`: the quick check, or the full sweep when
+## `full` is set.
 ## `{"ok": bool, "reason": String, "cache_dir": String, "manifest": Dictionary}`.
-static func open_active(caches_dir: String = CACHES_DIR) -> Dictionary:
-	var cache_dir: String = active_cache_dir(caches_dir)
-	if cache_dir == "":
-		return {"ok": false, "reason": FIRST_RUN_HINT % caches_dir,
-			"cache_dir": "", "manifest": {}}
+static func open_dir(cache_dir: String, full: bool = false) -> Dictionary:
 	var manifest: Dictionary = read_json(cache_dir + "/" + MANIFEST_NAME)
-	var problems: PackedStringArray = verify(cache_dir, manifest)
+	var problems: PackedStringArray = verify(cache_dir, manifest) if full \
+		else quick_check(cache_dir, manifest)
 	if not problems.is_empty():
 		return {"ok": false,
 			"reason": "cache %s refused: %s" % [cache_dir, ", ".join(problems)],
 			"cache_dir": cache_dir, "manifest": manifest}
 	return {"ok": true, "reason": "", "cache_dir": cache_dir,
 		"manifest": manifest}
+
+
+## The published cache `active.json` names, opened like any other directory.
+static func open_active(caches_dir: String = CACHES_DIR,
+		full: bool = false) -> Dictionary:
+	var cache_dir: String = active_cache_dir(caches_dir)
+	if cache_dir == "":
+		return {"ok": false, "reason": FIRST_RUN_HINT % caches_dir,
+			"cache_dir": "", "manifest": {}}
+	return open_dir(cache_dir, full)
+
+
+## The first cache source that exists, in the order the header gives, opened.
+## `args` are the command-line arguments (`--cache=`, `--verify-cache`); the
+## other parameters exist so the suites can walk the order over directories
+## of their own.
+static func locate(args: PackedStringArray,
+		bundled: String = BUNDLED_CACHE, caches_dir: String = CACHES_DIR,
+		dev: String = DEV_CACHE) -> Dictionary:
+	var full: bool = args.has(VERIFY_ARG)
+	for arg: String in args:
+		if arg.begins_with(CACHE_ARG):
+			return open_dir(arg.trim_prefix(CACHE_ARG), full)
+	if has_manifest(bundled):
+		return open_dir(bundled, full)
+	if not active_cache_dir(caches_dir).is_empty():
+		return open_active(caches_dir, full)
+	if has_manifest(dev):
+		return open_dir(dev, full)
+	return {"ok": false, "reason": FIRST_RUN_HINT % caches_dir,
+		"cache_dir": "", "manifest": {}}
+
+
+## **The manifest, not the directory**, says a cache is there: an interrupted
+## `make data` leaves the directory standing with nothing in it.
+static func has_manifest(cache_dir: String) -> bool:
+	return FileAccess.file_exists(cache_dir + "/" + MANIFEST_NAME)
+
+
+static func _document_problems(manifest: Dictionary) -> PackedStringArray:
+	var problems: PackedStringArray = PackedStringArray()
+	if manifest.is_empty():
+		problems.append("no %s; it is not a cache" % MANIFEST_NAME)
+		return problems
+	if DictRead.as_int(manifest.get("cache_schema_version", -1)) \
+			!= CACHE_SCHEMA_VERSION:
+		problems.append("cache schema %s != %d"
+			% [manifest.get("cache_schema_version", "-"), CACHE_SCHEMA_VERSION])
+	if DictRead.as_string(manifest.get("converter_version", "")) \
+			!= CONVERTER_VERSION:
+		problems.append("converter %s != %s"
+			% [manifest.get("converter_version", "-"), CONVERTER_VERSION])
+	return problems
 
 
 static func _sha256(data: PackedByteArray) -> String:

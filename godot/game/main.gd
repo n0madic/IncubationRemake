@@ -97,13 +97,6 @@ const FLY_DIRECTION_SHIFT: int = 3
 ## Why a sequence is playing, which decides what follows it.
 const SEQUENCE_DEBUG: String = "debug"
 const SEQUENCE_DIALOGUE: String = "dialogue"
-## The self-contained Android package has no first-run conversion step: its
-## verified cache is read directly from the installed PCK. Keeping this apart
-## from `generated/` prevents a desktop export made after an Android build from
-## silently shipping test fixtures.
-const ANDROID_CACHE: String = "res://android_payload/cache"
-## Where a development run finds the same bytes production reads from `user://`.
-const DEV_CACHE: String = "res://generated/cache"
 
 var world: World = null
 ## **The picture's own world, one command behind the truth.**
@@ -558,20 +551,6 @@ const TEST_CAPTION: String = \
 	+ "%d / %d suites -- running %s\n\nabout two minutes, then it quits"
 
 
-func _bundled_cache_dir() -> String:
-	# Prefer the package payload so a local Android export exercises precisely
-	# the bytes an installed app reads. Editor fixtures remain the fallback for
-	# desktop development and tests.
-	# **The manifest, not the directory.** An interrupted `make android-cache`
-	# leaves the payload directory standing with nothing in it, and choosing it
-	# on that alone made a plain desktop run die in [method CacheLoader.verify]
-	# with the intact fixtures sitting beside it.
-	for candidate: String in [ANDROID_CACHE, DEV_CACHE]:
-		if FileAccess.file_exists(candidate + "/manifest.json"):
-			return candidate
-	return ""
-
-
 func _ready() -> void:
 	if OS.has_feature(TEST_FEATURE):
 		var runner: GDScript = _test_runner()
@@ -586,32 +565,22 @@ func _ready() -> void:
 	get_tree().quit_on_go_back = false
 	_install_debug_status()
 
-	# **The published cache is verified exactly once, inside
-	# [method CacheLoader.open_active].**  That call reads and SHA-256s every
-	# file the manifest declares, and this used to re-read the manifest and
-	# sweep the whole inventory a second time straight after it -- two full
-	# passes over 100 MB for a campaign publish, on every start-up, for one
-	# answer.  The manifest `open_active` already parsed is the same document.
-	var opened: Dictionary = CacheLoader.open_active()
+	var args: PackedStringArray = OS.get_cmdline_args()
+	args.append_array(OS.get_cmdline_user_args())
+	# **The cache is checked exactly once, inside [method CacheLoader.locate]**,
+	# which also decides which cache it is (the bundled data, the player's own,
+	# the development fixtures or `--cache=`).  The manifest it parsed is the
+	# document everything below reads.
+	var located_at: int = Time.get_ticks_usec()
+	var opened: Dictionary = CacheLoader.locate(args)
 	var manifest: Dictionary = DictRead.as_dict(opened["manifest"])
-	if DictRead.as_bool(opened["ok"]):
-		_cache_dir = DictRead.as_string(opened["cache_dir"])
-	else:
-		var fallback_cache: String = _bundled_cache_dir()
-		if fallback_cache.is_empty():
-			_fail(DictRead.as_string(opened["reason"]))
-			return
-		# Neither a packaged cache nor the development tree has `active.json`, so
-		# `open_active` cannot reach them. This branch always validates the
-		# manifest before any loader reads a file from either location.
-		_cache_dir = fallback_cache
-		manifest = CacheLoader.read_json(
-			_cache_dir + "/" + CacheLoader.MANIFEST_NAME)
-		var problems: PackedStringArray = CacheLoader.verify(_cache_dir,
-			manifest)
-		if not problems.is_empty():
-			_fail("cache refused: " + ", ".join(problems))
-			return
+	if not DictRead.as_bool(opened["ok"]):
+		_fail(DictRead.as_string(opened["reason"]))
+		return
+	_cache_dir = DictRead.as_string(opened["cache_dir"])
+	print("cache: %s (%d files, checked in %d ms)" % [_cache_dir,
+		DictRead.as_array(manifest.get("inventory", [])).size(),
+		(Time.get_ticks_usec() - located_at) / 1000])
 	_missions = _missions_in(manifest)
 	if _missions.is_empty():
 		_fail("the cache at %s contains no missions" % _cache_dir)
@@ -623,8 +592,6 @@ func _ready() -> void:
 	# language is a setting too, and every loader from here on reads through
 	# it, so the file comes first of all.
 	var _had_settings: bool = settings.load_from_disk()
-	var args: PackedStringArray = OS.get_cmdline_args()
-	args.append_array(OS.get_cmdline_user_args())
 	var wanted_language: String = _language_choice(args, settings.language)
 	_paths = CachePaths.create(_cache_dir, manifest, wanted_language)
 	if _paths.fallback:

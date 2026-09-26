@@ -5,10 +5,10 @@ extends TestSuite
 ## The Python side owns the transactional publish and proves it on a temporary
 ## directory (`tools/remake_convert.py --check-cache`).  What has to be proved
 ## **here** is the other half of the same contract: the loader refuses a cache
-## whose inventory does not verify, and [method CacheLoader.open_active] does
-## that verification on every call rather than only on the first.  Verifying
-## once would make "a partial cache is never accepted" a claim about the happy
-## path.
+## whose inventory does not verify -- by shape at every start
+## ([method CacheLoader.quick_check]) and byte for byte on request
+## ([method CacheLoader.verify]) -- and [method CacheLoader.locate] picks the
+## source in a fixed order and refuses a broken one instead of skipping it.
 ##
 ## **The sweeps below are the expensive part of this suite** -- 342 ms each over
 ## a 100 MB campaign publish -- and four of the six reach the inventory, which
@@ -103,6 +103,22 @@ func run(h: TestHarness) -> void:
 			"digest"),
 		"a declared digest that does not match is refused")
 
+	# **The start-up check** refuses the same shapes without reading a byte of
+	# data -- and, by construction, not a digest: that is the one fault left to
+	# `--verify-cache` and to [method CacheLoader.verify] above.
+	var dir: String = CacheFixture.cache_dir()
+	h.equal("quick.clean", ", ".join(CacheLoader.quick_check(dir, manifest)), "")
+	h.check("quick.version_refused",
+		_any_contains(CacheLoader.quick_check(dir, other_converter), "converter"))
+	h.check("quick.missing_file_refused",
+		_any_contains(CacheLoader.quick_check(dir, missing), "missing"))
+	h.check("quick.size_refused",
+		_any_contains(CacheLoader.quick_check(dir, wrong_size), "bytes"))
+	h.equal("quick.digest_not_read",
+		", ".join(CacheLoader.quick_check(dir, wrong_digest)), "",
+		"a digest is only the full sweep's to check")
+	_check_locate(h)
+
 	# And the cache actually loads into a world.
 	var loaded: Dictionary = CacheFixture.load_slice_world()
 	h.check("load.world", not loaded.is_empty(), "the slice mission loads")
@@ -126,6 +142,102 @@ func run(h: TestHarness) -> void:
 	_check_columns(h, CacheFixture.cache_dir())
 	_check_frontend_documents(h, CacheFixture.cache_dir())
 	_check_cache_paths(h)
+
+
+## [method CacheLoader.locate]'s order over caches of this suite's own:
+## `--cache=`, then the bundled data, then the player's published cache, then
+## the development tree -- and a source that exists but does not check out is
+## refused, never skipped for the next one.
+static func _check_locate(h: TestHarness) -> void:
+	var root: String = "user://tests/cache_locate"
+	_remove_tree(ProjectSettings.globalize_path(root))
+	var bundled: String = root + "/bundled"
+	var caches: String = root + "/caches"
+	var published: String = caches + "/1-test"
+	var dev: String = root + "/dev"
+	var forced: String = root + "/forced"
+	for cache: String in [bundled, published, dev, forced]:
+		_write_tiny_cache(cache)
+	_write_text(caches + "/" + CacheLoader.ACTIVE_NAME,
+		JSON.stringify({"cache_id": "1-test"}))
+	var none: PackedStringArray = PackedStringArray()
+
+	h.equal("locate.bundled_first", _located(
+		CacheLoader.locate(none, bundled, caches, dev)), bundled)
+	h.equal("locate.forced_wins", _located(CacheLoader.locate(
+		PackedStringArray([CacheLoader.CACHE_ARG + forced]), bundled, caches,
+		dev)), forced)
+	h.equal("locate.published_second", _located(
+		CacheLoader.locate(none, root + "/absent", caches, dev)), published)
+	h.equal("locate.dev_last", _located(CacheLoader.locate(
+		none, root + "/absent", root + "/no-caches", dev)), dev)
+	var nothing: Dictionary = CacheLoader.locate(none, root + "/absent",
+		root + "/no-caches", root + "/absent")
+	h.check("locate.first_run_hint",
+		not DictRead.as_bool(nothing["ok"]) and DictRead.as_string(
+			nothing["reason"]).contains("remake_convert.py"))
+
+	# A bundled cache that fails its check is refused by name: the published
+	# and development caches behind it do not quietly take its place.
+	_write_text(bundled + "/tables/tiny.json", "{}")
+	var broken: Dictionary = CacheLoader.locate(none, bundled, caches, dev)
+	h.check("locate.broken_refused_not_skipped",
+		not DictRead.as_bool(broken["ok"])
+		and DictRead.as_string(broken["reason"]).contains("bytes"),
+		DictRead.as_string(broken["reason"]))
+	# The same bytes pass the quick check when the length is right and only the
+	# full sweep (`--verify-cache`) sees the digest.
+	_write_text(bundled + "/tables/tiny.json", '{"x":2}')
+	h.check("locate.quick_misses_same_size_damage", DictRead.as_bool(
+		CacheLoader.locate(none, bundled, caches, dev)["ok"]))
+	var full: Dictionary = CacheLoader.locate(PackedStringArray(
+		[CacheLoader.VERIFY_ARG]), bundled, caches, dev)
+	h.check("locate.verify_arg_sweeps", not DictRead.as_bool(full["ok"])
+		and DictRead.as_string(full["reason"]).contains("digest"),
+		DictRead.as_string(full["reason"]))
+	_remove_tree(ProjectSettings.globalize_path(root))
+
+
+static func _located(opened: Dictionary) -> String:
+	if not DictRead.as_bool(opened["ok"]):
+		return "refused: " + DictRead.as_string(opened["reason"])
+	return DictRead.as_string(opened["cache_dir"])
+
+
+## One document, `{"x":1}`, and a manifest that declares it with this build's
+## versions.
+static func _write_tiny_cache(cache: String) -> void:
+	var body: String = '{"x":1}'
+	_write_text(cache + "/tables/tiny.json", body)
+	var ctx: HashingContext = HashingContext.new()
+	var _started: Error = ctx.start(HashingContext.HASH_SHA256)
+	var _updated: Error = ctx.update(body.to_utf8_buffer())
+	_write_text(cache + "/" + CacheLoader.MANIFEST_NAME, JSON.stringify({
+		"cache_schema_version": CacheLoader.CACHE_SCHEMA_VERSION,
+		"converter_version": CacheLoader.CONVERTER_VERSION,
+		"inventory": [{"path": "tables/tiny.json",
+			"size": body.to_utf8_buffer().size(),
+			"sha256": ctx.finish().hex_encode()}],
+	}))
+
+
+static func _write_text(path: String, text: String) -> void:
+	var _made: Error = DirAccess.make_dir_recursive_absolute(
+		ProjectSettings.globalize_path(path.get_base_dir()))
+	var file: FileAccess = FileAccess.open(path, FileAccess.WRITE)
+	file.store_string(text)
+	file.close()
+
+
+static func _remove_tree(path: String) -> void:
+	var dir: DirAccess = DirAccess.open(path)
+	if dir == null:
+		return
+	for name: String in dir.get_files():
+		var _gone: Error = dir.remove(name)
+	for sub: String in dir.get_directories():
+		_remove_tree(path + "/" + sub)
+	var _dropped: Error = DirAccess.remove_absolute(path)
 
 
 ## [CachePaths] -- the per-file language resolver of docs/92 section 7.6, on

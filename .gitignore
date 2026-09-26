@@ -9,9 +9,9 @@ tools/out
 # Godot editor cache, dev fixtures and export output (docs/92 section 3.2, section 10.1).
 godot/.godot/
 godot/generated/
-# Android's self-contained export staging area. Like generated/, it is
-# reconstructed from the read-only retail data for each package build.
-godot/android_payload/
+# The converted game data every build carries inside its package (`make data`).
+# Like generated/, it is reconstructed from the read-only retail data.
+godot/data/
 godot/export/
 
 # The Wine harnesses' build products. Each is rebuilt from the committed
@@ -27,3 +27,6 @@ tests/fixtures/*/*.json
 # The by-hand pass's screenshots (tests/fixtures/play/README.md): pictures of
 # Blue Byte's art, filed per pass and never committed.
 tests/fixtures/play/*/
+
+# Machine-local Makefile settings (LANGUAGE_PACKS and the like).
+local.mk

@@ -119,8 +119,9 @@ ai_runtime.py
 campaign_runtime.py
 remake_convert.py     convert missions and their assets into the remake's cache
                       (docs/92 10.1)
-verify_embedded_cache.py  require an Android APK to carry every byte its embedded
-                      cache declares (run by make build-android)
+verify_embedded_cache.py  require an Android APK to carry every byte of
+                      godot/data/cache raw (or, with --absent, none of it);
+                      run by make build-android
 
 movemap_gold.py       native captures through dbgcall -- each needs Wine and a
 turn_gold.py            copy of the game, and each --check fails without a

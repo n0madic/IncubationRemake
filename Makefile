@@ -5,6 +5,11 @@
 
 SHELL := /bin/sh
 
+# Machine-local settings, gitignored: e.g. `LANGUAGE_PACKS = --language-pack
+# "Russian=/path/to/1C" ...`, so every `make build-*` reuses the same data key
+# instead of reconverting the data without the pack.
+-include local.mk
+
 PYTHON ?= python3
 GODOT ?= $(firstword $(wildcard /Applications/Godot.app/Contents/MacOS/Godot) $(shell command -v godot4 2>/dev/null) $(shell command -v godot 2>/dev/null))
 GAME_ROOT ?= gog_incubation
@@ -19,8 +24,8 @@ endif
 
 .DEFAULT_GOAL := help
 
-.PHONY: help check-godot check-formats check-cache extract fixtures android-cache \
-	android-cache-force _android-cache-key \
+.PHONY: help check-godot check-formats check-cache extract fixtures data \
+	data-force _data-key \
 	test-godot test-touch test-export test build build-macos build-windows \
 	build-linux build-android build-ios
 
@@ -35,18 +40,22 @@ help:
 		'  make test-touch     Run the viewport-level touch integration test.' \
 		'  make test-export    Export the macOS Tests preset and run the suites inside it (needs a window).' \
 		'  make test           Run format, cache, and Godot checks.' \
+		'  make data           Convert the game data into godot/data/cache if it is out of date.' \
+		'  make data-force     Rebuild it even when it looks current.' \
 		'  make build          Build the host desktop target (macOS on this host).' \
 		'  make build-macos    Export a macOS .app.' \
 		'  make build-windows  Export a Windows x86_64 .exe.' \
 		'  make build-linux    Export a Linux x86_64 executable.' \
-		'  make android-cache  Build the Android payload cache if it is out of date.' \
-		'  make android-cache-force  Rebuild it even when it looks current.' \
-		'  make build-android  Build a self-contained Android APK (ARMv7 + ARM64).' \
+		'  make build-android  Build an Android APK (ARMv7 + ARM64).' \
 		'  make build-ios      Export an iOS Xcode project; configure a real Apple Team ID first.' \
+		'' \
+		'Every build-* carries the converted game data inside its own package (make data runs first).' \
+		'Such a build contains Blue Byte data: it is for your own use, never for publishing.' \
+		'NO_CACHE=1 builds without the data; that build reads a cache made with remake_convert.py -o.' \
 		'' \
 		'Default is a debug export. Android release needs local keystore credentials; iOS also needs Xcode.' \
 		'Overrides: GODOT=/path/to/Godot GAME_ROOT=/path/to/retail-install PYTHON=python3 EXPORT_MODE=debug|release' \
-		'           LANGUAGE_PACKS="--language-pack Russian=/path/to/1C ..." (android-cache and build-android alike -- a build-android without it rebuilds the payload base-only)'
+		'           LANGUAGE_PACKS="--language-pack Russian=/path/to/1C ..." (part of the data key: changing it reconverts)'
 
 check-godot:
 	@test -n "$(GODOT)" && test -x "$(GODOT)" || { \
@@ -122,62 +131,82 @@ fixtures:
 	$(PYTHON) tools/presentation_gold.py --emit-special-cases tests/fixtures/presentation/cases_special.json --root $(GAME_ROOT)
 	$(PYTHON) tools/hud_tables.py --emit-cases tests/fixtures/hud/cases_hud.json --root $(GAME_ROOT)
 
-# Android builds are standalone: the cache is regenerated from the supplied
-# retail installation and then checked inside the APK file by file. It
-# stays in ignored godot/android_payload/ and is never a repository asset.
+# The converted game data every build carries. `make data` writes it to
+# ignored godot/data/cache with a keep-importer `.import` sidecar beside each
+# PNG/WAV/OGG, and every export preset's include_filter takes the JSON
+# documents, so a plain export puts the directory into the game's own package
+# unimported: the PCK inside the .app, the .pck beside the .exe, the APK, the
+# IPA (docs/92 section 10.1). It is never a repository asset.
 #
 # It is a build **product**, not a step: converting the whole campaign takes
-# about a minute and 200 MiB, and `build-android` used to pay it on every
-# export. It is rebuilt when the converter changes, when this file changes, or
-# when the arguments it was built with change; `make android-cache-force`
-# rebuilds it unconditionally.
+# about a minute and 250 MiB, and every build used to pay it. It is rebuilt
+# when the converter changes, when this file changes, or when the arguments it
+# was built with change; `make data-force` rebuilds it unconditionally.
 #
 # The stamp is a file of its own and **not** the cache's own manifest: the
 # converter refuses to replace a `cache/` directory that does not look like one
-# of its own, so removing the manifest to force a rebuild leaves a payload
+# of its own, so removing the manifest to force a rebuild leaves a directory
 # nothing will overwrite. The manifest is still what says a cache is there at
 # all, which is why the key check reads it.
-ANDROID_PAYLOAD := $(GODOT_DIR)/android_payload
-ANDROID_CACHE_MANIFEST := $(ANDROID_PAYLOAD)/cache/manifest.json
-ANDROID_CACHE_STAMP := $(ANDROID_PAYLOAD)/.cache-stamp
-ANDROID_CACHE_KEY := $(ANDROID_PAYLOAD)/.cache-build-key
+DATA_DIR := $(GODOT_DIR)/data
+DATA_MANIFEST := $(DATA_DIR)/cache/manifest.json
+DATA_STAMP := $(DATA_DIR)/.cache-stamp
+DATA_KEY := $(DATA_DIR)/.cache-build-key
 # `LANGUAGE_PACKS` is the converter's own switches for the localisations the
-# payload carries -- e.g. `--language-pack Russian=/path/to/1C --plate
-# Russian:title=/path/Title.bmp` -- and is part of the key, so a payload
-# converted without a pack is stale once one is asked for.  Empty by default:
-# an APK built without it ships the base language only.
+# data carries -- e.g. `--language-pack Russian=/path/to/1C --plate
+# Russian:title=/path/Title.bmp` -- and is part of the key, so data converted
+# without a pack is stale once one is asked for.  Empty by default: a build
+# made without it ships the base language only.
 LANGUAGE_PACKS ?=
-ANDROID_CACHE_ARGS := $(GAME_ROOT) --campaign-maps --instant-action-maps $(LANGUAGE_PACKS)
+DATA_ARGS := $(GAME_ROOT) --campaign-maps --instant-action-maps $(LANGUAGE_PACKS)
 CONVERTER_SOURCES := $(wildcard tools/*.py tools/inclib/*.py)
 
-android-cache:
-	@$(MAKE) --no-print-directory _android-cache-key
-	@$(MAKE) --no-print-directory $(ANDROID_CACHE_STAMP)
+# `NO_CACHE=1` exports without the data, for a build that may leave this
+# machine: `.gdignore` hides godot/data from the editor's filesystem for the
+# length of the export, so no preset can pick it up, and the trap takes it
+# away again however the export ends.
+NO_CACHE ?=
+ifeq ($(NO_CACHE),)
+BUILD_DATA := data
+else
+BUILD_DATA :=
+endif
 
-android-cache-force:
-	rm -f $(ANDROID_CACHE_STAMP)
-	@$(MAKE) --no-print-directory android-cache
+# $(call godot_export,PRESET,OUTPUT) -- re-import first, so the export sees
+# the data directory exactly as it is now (converted, or hidden by NO_CACHE).
+define godot_export
+	mkdir -p $(GODOT_DIR)/$(EXPORT_DIR)
+	@if [ -n "$(NO_CACHE)" ]; then \
+		mkdir -p $(DATA_DIR) && touch $(DATA_DIR)/.gdignore && \
+		trap 'rm -f $(DATA_DIR)/.gdignore' EXIT INT TERM; \
+	fi; \
+	$(GODOT) --headless --path $(GODOT_DIR) --import && \
+	$(GODOT) --headless --path $(GODOT_DIR) --export-$(EXPORT_MODE) $(1) $(EXPORT_DIR)/$(2)
+endef
 
-# Three things make prerequisites cannot see: a payload converted from another
-# retail installation, one converted without `--instant-action-maps`, and one
-# whose cache has been removed under a stamp that stayed behind. All three are
+data:
+	@$(MAKE) --no-print-directory _data-key
+	@$(MAKE) --no-print-directory $(DATA_STAMP)
+
+data-force:
+	rm -f $(DATA_STAMP)
+	@$(MAKE) --no-print-directory data
+
+# Three things make prerequisites cannot see: data converted from another
+# retail installation, data converted without `--instant-action-maps`, and a
+# cache that has been removed under a stamp that stayed behind. All three are
 # stale however new the stamp is.
-_android-cache-key:
-	@if [ ! -f "$(ANDROID_CACHE_MANIFEST)" ] \
-			|| [ ! -f "$(ANDROID_CACHE_KEY)" ] \
-			|| [ "$$(cat "$(ANDROID_CACHE_KEY)")" != "$(ANDROID_CACHE_ARGS)" ]; then \
-		rm -f "$(ANDROID_CACHE_STAMP)"; \
+_data-key:
+	@if [ ! -f "$(DATA_MANIFEST)" ] \
+			|| [ ! -f "$(DATA_KEY)" ] \
+			|| [ "$$(cat "$(DATA_KEY)")" != '$(DATA_ARGS)' ]; then \
+		rm -f "$(DATA_STAMP)"; \
 	fi
 
-$(ANDROID_CACHE_STAMP): $(CONVERTER_SOURCES) $(MAKEFILE_LIST)
-	$(PYTHON) tools/remake_convert.py $(ANDROID_CACHE_ARGS) --dev-fixtures $(ANDROID_PAYLOAD)
-	# Cache files are verified as original bytes at run time, so keep Godot's
-	# importer out of this build-only subtree. The Android export plugin writes
-	# each manifest file as raw data into the package. The conversion renames a
-	# whole staging directory into place, so this is written after every one.
-	touch $(ANDROID_PAYLOAD)/cache/.gdignore
-	@printf '%s' '$(ANDROID_CACHE_ARGS)' > "$(ANDROID_CACHE_KEY)"
-	@touch "$(ANDROID_CACHE_STAMP)"
+$(DATA_STAMP): $(CONVERTER_SOURCES) $(MAKEFILE_LIST)
+	$(PYTHON) tools/remake_convert.py $(DATA_ARGS) --dev-fixtures $(DATA_DIR)
+	@printf '%s' '$(DATA_ARGS)' > "$(DATA_KEY)"
+	@touch "$(DATA_STAMP)"
 
 test-godot: check-godot
 	bash $(GODOT_DIR)/run_tests.sh $(GODOT)
@@ -196,29 +225,28 @@ test: check-formats check-cache test-godot
 
 build: build-macos
 
-build-macos: check-godot
-	mkdir -p $(GODOT_DIR)/$(EXPORT_DIR)
-	$(GODOT) --headless --path $(GODOT_DIR) --export-$(EXPORT_MODE) macOS $(EXPORT_DIR)/Incubation-remake.app
+build-macos: check-godot $(BUILD_DATA)
+	$(call godot_export,macOS,Incubation-remake.app)
 
-build-windows: check-godot
-	mkdir -p $(GODOT_DIR)/$(EXPORT_DIR)
-	$(GODOT) --headless --path $(GODOT_DIR) --export-$(EXPORT_MODE) Windows $(EXPORT_DIR)/Incubation-remake.exe
+build-windows: check-godot $(BUILD_DATA)
+	$(call godot_export,Windows,Incubation-remake.exe)
 
-build-linux: check-godot
-	mkdir -p $(GODOT_DIR)/$(EXPORT_DIR)
-	$(GODOT) --headless --path $(GODOT_DIR) --export-$(EXPORT_MODE) Linux $(EXPORT_DIR)/Incubation-remake.x86_64
+build-linux: check-godot $(BUILD_DATA)
+	$(call godot_export,Linux,Incubation-remake.x86_64)
 
-build-android: check-godot android-cache
-	mkdir -p $(GODOT_DIR)/$(EXPORT_DIR)
-	$(GODOT) --headless --path $(GODOT_DIR) --export-$(EXPORT_MODE) Android $(EXPORT_DIR)/Incubation-remake.apk
-	$(PYTHON) tools/verify_embedded_cache.py $(GODOT_DIR)/$(EXPORT_DIR)/Incubation-remake.apk
+build-android: check-godot $(BUILD_DATA)
+	$(call godot_export,Android,Incubation-remake.apk)
+ifeq ($(NO_CACHE),)
+	$(PYTHON) tools/verify_embedded_cache.py $(GODOT_DIR)/$(EXPORT_DIR)/Incubation-remake.apk --expect-manifest $(DATA_MANIFEST)
+else
+	$(PYTHON) tools/verify_embedded_cache.py $(GODOT_DIR)/$(EXPORT_DIR)/Incubation-remake.apk --absent
+endif
 
-build-ios: check-godot
+build-ios: check-godot $(BUILD_DATA)
 	@test -n "$(IOS_TEAM_ID)" || { \
 		echo 'build-ios: set application/app_store_team_id in godot/export_presets.cfg first.' >&2; exit 1; \
 	}
 	@test -d /Applications/Xcode.app || { \
 		echo 'build-ios: Xcode is required; Command Line Tools alone cannot export iOS.' >&2; exit 1; \
 	}
-	mkdir -p $(GODOT_DIR)/$(EXPORT_DIR)
-	$(GODOT) --headless --path $(GODOT_DIR) --export-$(EXPORT_MODE) iOS $(EXPORT_DIR)/Incubation-remake-ios.zip
+	$(call godot_export,iOS,Incubation-remake-ios.zip)

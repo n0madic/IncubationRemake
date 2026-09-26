@@ -372,12 +372,40 @@ def dev_fixtures(root: Path, missions: list[str], out: Path,
                     "it is not one of this converter's caches")
     (staging.root / cachemod.MANIFEST_NAME).write_bytes(
         cachemod.dumps(manifest).encode("utf-8"))
+    sidecars = write_keep_sidecars(staging.root, manifest["inventory"])
     staging.root.rename(target)
-    LOG.info("wrote %s (%d files)", target, len(manifest["inventory"]))
+    LOG.info("wrote %s (%d files, %d keep sidecars)", target,
+             len(manifest["inventory"]), sidecars)
     written = write_eye_fixtures(root, missions, out, manifest)
     LOG.info("wrote %s (%d files for the eye, read by no code)",
              out / EYE_DIR, written)
     return 0
+
+
+#: The cache's media the Godot editor has an importer for.  Imported, they
+#: would ship as `.ctex` textures and audio samples instead of the bytes the
+#: manifest pins, and every reader loads them from their raw bytes.
+KEEP_SUFFIXES = (".png", ".wav", ".ogg")
+#: The `.import` sidecar of the editor's *Keep File (exported as is)* importer:
+#: the file is not imported and an export carries it byte for byte.  Together
+#: with the presets' `include_filter` for the JSON documents, this is what
+#: puts a directory cache into the game's own PCK (docs/92 section 10.1).
+KEEP_IMPORT = '[remap]\n\nimporter="keep"\n'
+
+
+def write_keep_sidecars(root: Path, inventory: list[dict[str, Any]]) -> int:
+    """Give every media file of ``inventory`` under ``root`` a keep sidecar.
+
+    The sidecars are Godot's, not the cache's: they are not in the inventory,
+    so the manifest -- and every digest built on it -- is unchanged.
+    """
+    written = 0
+    for record in inventory:
+        rel = str(record["path"])
+        if rel.lower().endswith(KEEP_SUFFIXES):
+            (root / f"{rel}.import").write_text(KEEP_IMPORT, encoding="ascii")
+            written += 1
+    return written
 
 
 #: Marks a directory as one this tool wrote and may therefore delete.  The
@@ -2242,6 +2270,30 @@ def run_cache_checks() -> int:
         c.check("cache.dev_fixtures_takes_over_empty", empty_ok,
                 "an empty directory made by hand before the first run is not "
                 "somebody's data")
+
+        # Every media file gets the keep sidecar that ships it raw inside a
+        # PCK, nothing else gets one, and the sidecars stay out of the
+        # inventory, so the manifest does not move.
+        media = cachemod.Staging.create(Path(tmp) / "keep")
+        for rel in ("art/plate.png", "audio/waves/a.WAV", "audio/music/1.ogg",
+                    "tables/trig.json"):
+            media.write_bytes(rel, b"x")
+        keep_inventory = cachemod.build_inventory(media)
+        written = write_keep_sidecars(media.root, keep_inventory)
+        sidecars = sorted(p.relative_to(media.root).as_posix()
+                          for p in media.root.rglob("*.import"))
+        c.expect("cache.dev_fixtures_writes_keep_sidecars", sidecars,
+                 ["art/plate.png.import", "audio/music/1.ogg.import",
+                  "audio/waves/a.WAV.import"],
+                 f"{written} sidecar(s), one per media file")
+        c.check("cache.keep_sidecar_body",
+                all((media.root / s).read_text(encoding="ascii") == KEEP_IMPORT
+                    for s in sidecars),
+                'every sidecar is [remap] importer="keep"')
+        c.expect("cache.keep_sidecars_outside_inventory",
+                 cachemod.build_inventory(media), keep_inventory,
+                 "the inventory is unchanged by the sidecars")
+        media.discard()
 
         # An unknown schema version is refused by name.
         stale = dict(replacement_manifest)

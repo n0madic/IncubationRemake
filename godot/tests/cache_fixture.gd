@@ -1,32 +1,32 @@
 class_name CacheFixture
 extends RefCounted
 
-## Loads the development cache from `res://generated/cache/`.
+## Finds the cache the suites read, the way the game finds its own.
 ##
-## Production reads exactly the same bytes from `user://caches/<id>/`; the
-## development tree exists so the map, the meshes and the tables can be looked
-## at in the editor and in external tools.  docs/92 section 10.1 item 4 asks
+## A build reads its data from `res://data/cache` (or a player's
+## `user://caches/<id>/`); the development tree `res://generated/cache/` exists
+## so the map, the meshes and the tables can be looked at in the editor and in
+## external tools.  docs/92 section 10.1 item 4 asks
 ## that the *portable logical data* be diffed rather than an incidental Godot
 ## serialisation -- and there is none to diff around, because the two trees come
 ## out of the same function.
 
-## The development tree.  Production is `user://caches/<id>/`, and that is
-## looked at first: an exported build has no `res://generated/`, and the point
-## of running the suites inside one is that they read what the game reads.
-const DEV_CACHE_DIR: String = "res://generated/cache"
+## The development tree, the last resort of [method CacheLoader.locate] and
+## this fixture's fallback when nothing else checks out.
+const DEV_CACHE_DIR: String = CacheLoader.DEV_CACHE
 const SLICE_MISSION: String = "_C_115"
 
 ## Where the answer of the first [method cache_dir] call is kept for the rest
 ## of the process.
 ##
-## [method CacheLoader.open_active] **verifies the whole cache**: it reads every
-## file the manifest declares and SHA-256s it.  A published campaign cache is
-## 100 MB over 2 689 files, so one call costs about a third of a second -- and
-## every accessor below used to make one, which is why a run spent two thirds
+## Opening a cache used to **verify the whole of it**: every file read and
+## SHA-256'd, about a third of a second over a 100 MB campaign publish -- and
+## every accessor below used to open one, which is why a run spent two thirds
 ## of its wall clock hashing the same bytes over and over (charisma alone:
-## 68.4 s of its 72.0 s, for 0.5 s of actual posing).  The cache does not change
-## while the suites run -- nothing under `tests/` publishes or writes one -- so
-## verifying it once is the whole of what repeated verification was buying.
+## 68.4 s of its 72.0 s, for 0.5 s of actual posing).  Start-up now runs only
+## [method CacheLoader.quick_check], and the full sweep is `test_cache.gd`'s;
+## the answer is still found once and kept, because the cache does not change
+## while the suites run -- nothing under `tests/` publishes or writes one.
 ##
 ## It is deliberately **not** a `static var`: a script that declares one is kept
 ## for the life of the process together with every script it names, and this one
@@ -37,16 +37,17 @@ const SLICE_MISSION: String = "_C_115"
 const CACHE_DIR_META: StringName = &"incubation_test_cache_dir"
 
 
-## The cache these fixtures read, production first.
+## The cache these fixtures read, in the game's own order
+## ([method CacheLoader.locate]; `--cache=DIR` on the test run forces one).
 ##
-## Verified in full on the first call and remembered after it; see
+## Found on the first call and remembered after it; see
 ## [constant CACHE_DIR_META].  `test_cache.gd` calls [method CacheLoader.verify]
 ## directly and is unaffected -- the refusal cases it covers are still measured
 ## against the real manifest.
 static func cache_dir() -> String:
 	if Engine.has_meta(CACHE_DIR_META):
 		return DictRead.as_string(Engine.get_meta(CACHE_DIR_META))
-	var opened: Dictionary = CacheLoader.open_active()
+	var opened: Dictionary = CacheLoader.locate(OS.get_cmdline_user_args())
 	var dir: String = DEV_CACHE_DIR
 	if DictRead.as_bool(opened["ok"]):
 		dir = DictRead.as_string(opened["cache_dir"])

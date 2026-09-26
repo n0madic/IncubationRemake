@@ -49,24 +49,15 @@ empty corpus, so a wrong path cannot pass.
 
 ### Play the remake
 
-1. Convert the installation into the remake's cache, written to Godot's user
-   directory for this project:
+1. Convert the installation into the remake's data:
 
    ```bash
-   python3 tools/remake_convert.py gog_incubation --campaign-maps \
-       --instant-action-maps -o "<user dir>/caches"
+   make data
    ```
 
-   where `<user dir>` is
-
-   | OS | Path |
-   |---|---|
-   | macOS | `~/Library/Application Support/Godot/app_userdata/Incubation - Remake` |
-   | Linux | `~/.local/share/godot/app_userdata/Incubation - Remake` |
-   | Windows | `%APPDATA%\Godot\app_userdata\Incubation - Remake` |
-
-   Started without a cache, the game says what to run instead of failing
-   silently.
+   This writes `godot/data/cache` (about 220 MB, gitignored). The editor run and
+   every build read it from there. Started without data, the game says what to
+   run instead of failing silently.
 
 2. Launch it:
 
@@ -77,11 +68,15 @@ empty corpus, so a wrong path cannot pass.
    ```
 
    Cheats are available on the backquote (`` ` ``) line in game, or as
-   `--cheats=god,ammo,kill,moves`.
+   `--cheats=god,ammo,kill,moves`. `--cache=DIR` forces a particular cache
+   directory; `--verify-cache` makes start-up recompute every file's SHA-256
+   instead of only checking that each file is there with the right size.
 
-A Russian installation can be layered over the cache with
-`--language-pack Russian=<root>`; see
-[`docs/92` §7.6](docs/92-remake-architecture.md).
+A Russian installation can be layered over the data with
+`make data LANGUAGE_PACKS='--language-pack "Russian=<root>"'`; see
+[`docs/92` §7.6](docs/92-remake-architecture.md). The switches are part of the
+data key, so put the line `LANGUAGE_PACKS = …` into a gitignored `local.mk`
+next to the `Makefile` and every `make build-…` keeps the pack.
 
 ## Building
 
@@ -90,9 +85,28 @@ make build            # the host platform
 make build-macos      # also: build-windows, build-linux, build-android, build-ios
 ```
 
-Exports are debug builds by default (`EXPORT_MODE=release` for release). Android
-packages carry a converted payload (`make android-cache`); iOS needs an Apple
-Team ID in `godot/export_presets.cfg` and Xcode. `make help` lists every target.
+Every build carries the converted data inside its own package: inside the
+`.app` on macOS, in the `.pck` next to the executable on Windows and Linux,
+inside the APK and the IPA. **Such a build contains the original game's data
+and is for your own use only — do not publish it.**
+
+`NO_CACHE=1 make build-…` makes a build without the data. It reads a cache the
+player converts from their own copy of the game:
+
+```bash
+python3 tools/remake_convert.py <game install> --campaign-maps \
+    --instant-action-maps -o "<user dir>/caches"
+```
+
+| OS | `<user dir>` |
+|---|---|
+| macOS | `~/Library/Application Support/Godot/app_userdata/Incubation - Remake` |
+| Linux | `~/.local/share/godot/app_userdata/Incubation - Remake` |
+| Windows | `%APPDATA%\Godot\app_userdata\Incubation - Remake` |
+
+Exports are debug builds by default (`EXPORT_MODE=release` for release). iOS
+needs an Apple Team ID in `godot/export_presets.cfg` and Xcode. `make help`
+lists every target.
 
 ## Tests
 

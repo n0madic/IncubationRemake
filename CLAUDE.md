@@ -33,9 +33,9 @@ from the repo root.
 | `make test-touch` | the viewport-level touch integration run (headless) |
 | `make test-export` | the same suites inside the `macOS Tests` export, gated like the editor run (needs a window) |
 | `make build-macos\|windows\|linux\|android\|ios` | export a target; `make build` is the host |
-| `make android-cache[-force]` | the Android payload cache (a build product, ~1 min / 200 MiB) |
+| `make data[-force]` | the game data every build carries in its package, in `godot/data/cache` (a build product, ~1 min / 220 MiB); `NO_CACHE=1 make build-*` leaves it out |
 
-Overrides: `GAME_ROOT=`, `GODOT=`, `PYTHON=`, `EXPORT_MODE=debug|release`.
+Overrides: `GAME_ROOT=`, `GODOT=`, `PYTHON=`, `EXPORT_MODE=debug|release`. Machine-local ones (e.g. `LANGUAGE_PACKS` for the Russian pack) live in gitignored `local.mk`.
 
 **There is no pytest suite.** Each format's test is its parser consuming **100 %
 of that format's files**, and every check **fails on an empty corpus** — a check
@@ -78,13 +78,24 @@ scenes), `dir3di_parse.py` / `din_parse.py` (Eng3d ASCII and binary indexes),
 record layouts there) and `charisma_dump.py` (assumption-free `.cho`/`.cha`
 chunk walker).
 
-### Publishing a cache for the remake
+### The remake's data
 
 ```bash
-python3 tools/remake_convert.py gog_incubation --campaign-maps \
-    --instant-action-maps -o "<user caches dir>"
+make data                                   # godot/data/cache, carried by every build
 python3 tools/remake_convert.py gog_incubation --dev-fixtures godot/generated
+python3 tools/remake_convert.py gog_incubation --campaign-maps \
+    --instant-action-maps -o "<user caches dir>"   # for a NO_CACHE=1 build
 ```
+
+A build carries `godot/data/cache` in its own PCK/APK/IPA: `--dev-fixtures` writes
+a keep-importer `.import` sidecar beside each PNG/WAV/OGG and the presets'
+`include_filter` takes the JSON, so the export ships the files raw. The game
+picks its cache with `CacheLoader.locate` — `--cache=DIR`, then
+`res://data/cache`, then `user://caches`, then `res://generated/cache` — and
+checks only versions, presence and sizes at start; `--verify-cache` runs the
+full SHA-256 sweep ([`docs/92` §3.2](docs/92-remake-architecture.md)). A build
+with the data is for the owner of the game only; a publishable one is
+`NO_CACHE=1 make build-*`.
 
 `--campaign-maps` and `--instant-action-maps` **belong together**: the first
 replaces `--missions` with all 92 campaign maps (a mission the cache lacks stops
@@ -282,8 +293,9 @@ Each of these is explained where it was found; the one-liner is what to act on.
   loading boundary — the canonical hash must never see the parsed form.
 - **`CONVERTER_VERSION` is written down twice**, in `tools/inclib/cache.py` and
   `godot/game/cache_loader.gd`, and a mismatch makes the loader refuse the cache.
-  Change the emitted document and you must bump **both** and republish the cache
-  — the suites read the published one, not only `godot/generated`.
+  Change the emitted document and you must bump **both**, rerun `make data` and
+  republish the user cache — the suites read the first cache `locate` finds,
+  not only `godot/generated`.
 - **Published cache directories are immutable and content-addressed.** Publish,
   pointer switch and collection share one inter-process lock; never reintroduce
   an in-place replacement of the directory `active.json` names.
