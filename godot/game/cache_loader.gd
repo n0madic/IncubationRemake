@@ -152,6 +152,16 @@ static func _problems(cache_dir: String, manifest: Dictionary, full: bool) \
 		# The static size is a stat, not an open: 30 ms over the 3 742-file
 		# bundled cache where opening each file took 100 to 400.
 		var length: int = FileAccess.get_size(path)
+		# **Android has no stat for a file inside the APK**: `get_size` answers
+		# -1 for every `res://` asset there, stored or deflated alike, while an
+		# opened file reports its length (Godot 4.7.2, API 36 emulator,
+		# 2026-09-26). So there, and only where the stat fails, the file is
+		# opened.
+		if length < 0:
+			var file: FileAccess = FileAccess.open(path, FileAccess.READ)
+			if file != null:
+				length = file.get_length()
+				file.close()
 		if length != DictRead.as_int(record["size"]):
 			problems.append("%s: %d bytes, expected %d"
 				% [rel, length, DictRead.as_int(record["size"])])
