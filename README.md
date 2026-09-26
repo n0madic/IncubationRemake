@@ -47,17 +47,6 @@ make check-formats
 Runs every parser over 100 % of its format's files. Every check fails on an
 empty corpus, so a wrong path cannot pass.
 
-### Extract assets
-
-```bash
-python3 tools/lib_extract.py gog_incubation -o tools/out/sprites    # sprites -> PNG
-python3 tools/visn_decode.py gog_incubation -o tools/out/textures   # textures -> PNG
-python3 tools/lcl_decode.py  gog_incubation -o tools/out/lcl        # mission scripts
-python3 tools/lev_parse.py   gog_incubation --png -o tools/out/maps # maps
-```
-
-Most tools take `--help`, a single file, and `--json`.
-
 ### Play the remake
 
 1. Convert the installation into the remake's cache, written to Godot's user

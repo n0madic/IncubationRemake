@@ -54,6 +54,7 @@ inclib/          shared library code
 lcl_decode.py         decode/encode .lcl and .gcl scripts
 lcl_parse.py          tokenize and parse LCL into an AST (semantics: docs/20)
 lev_parse.py          inspect .lev missions; ASCII maps and PNG renders
+extract_assets.py     run every extractor below at once into tools/out/
 lib_extract.py        extract .LIB sprites to PNG
 font_render.py        render text with the bitmap fonts; validate font metrics
 img_tables.py         verify the .IMG fixed-point tables against their formulas
@@ -154,6 +155,15 @@ corpus check: `3dw_parse.py`, `dir3di_parse.py`, `din_parse.py`,
 `pe_resources.py` and `charisma_dump.py`.
 
 ## Extracting assets
+
+Everything at once, into `tools/out/<step>/`:
+
+```bash
+python3 tools/extract_assets.py gog_incubation   # or: make extract
+python3 tools/extract_assets.py gog_incubation -o /tmp/inc --only sprites,maps
+```
+
+The same steps one by one, plus the finer-grained exports:
 
 ```bash
 python3 tools/lib_extract.py gog_incubation -o tools/out/sprites   # 2296 PNGs

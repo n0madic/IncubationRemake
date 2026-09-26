@@ -28,6 +28,7 @@ from the repo root.
 | `make check-cache` | verify the published remake cache |
 | `make test-godot` | the Godot harness (`godot/run_tests.sh`; needs Godot 4.7 and fixtures) |
 | `make test` | all three of the above |
+| `make extract` | every extractor at once into `tools/out/` (`tools/extract_assets.py`) |
 | `make fixtures` | rebuild the gitignored Godot test fixtures from the retail data |
 | `make test-touch` | the viewport-level touch integration run (headless) |
 | `make test-export` | the same suites inside the `macOS Tests` export, gated like the editor run (needs a window) |
@@ -59,6 +60,7 @@ mode. Read `--help` rather than guessing, or copy the invocation out of the
 ### Asset extraction and inspection
 
 ```bash
+python3 tools/extract_assets.py gog_incubation                      # all five below
 python3 tools/lib_extract.py gog_incubation -o tools/out/sprites    # sprite PNGs
 python3 tools/visn_decode.py gog_incubation -o tools/out/textures   # texture PNGs
 python3 tools/lcl_decode.py  gog_incubation -o tools/out/lcl        # deobfuscated scripts

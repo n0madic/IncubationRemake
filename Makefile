@@ -19,7 +19,7 @@ endif
 
 .DEFAULT_GOAL := help
 
-.PHONY: help check-godot check-formats check-cache fixtures android-cache \
+.PHONY: help check-godot check-formats check-cache extract fixtures android-cache \
 	android-cache-force _android-cache-key \
 	test-godot test-touch test-export test build build-macos build-windows \
 	build-linux build-android build-ios
@@ -29,6 +29,7 @@ help:
 		'Incubation commands:' \
 		'  make check-formats  Verify every documented retail format (read-only).' \
 		'  make check-cache    Verify the published remake cache.' \
+		'  make extract        Extract sprites, textures, scripts, maps and skeletons to tools/out/.' \
 		'  make fixtures       Rebuild ignored Godot test fixtures from the retail data.' \
 		'  make test-godot     Run the Godot harness (requires fixtures and Godot 4.7).' \
 		'  make test-touch     Run the viewport-level touch integration test.' \
@@ -99,6 +100,9 @@ check-formats:
 
 check-cache:
 	$(PYTHON) tools/remake_convert.py --check-cache
+
+extract:
+	$(PYTHON) tools/extract_assets.py $(GAME_ROOT)
 
 fixtures:
 	$(PYTHON) tools/remake_convert.py $(GAME_ROOT) --dev-fixtures $(GODOT_DIR)/generated
