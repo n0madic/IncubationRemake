@@ -9146,10 +9146,22 @@ class MainShotHost extends ShotHost:
 	## event on screen is the one that killed it, and its delta lands here
 	## rather than when the playback moves on, so the band over the cell and
 	## the radar's blip go with the body.
+	##
+	## **Only while the slot still holds the casualty.** The same shot can
+	## refill it: weapon 46's Spider takes the lowest slot with no live unit,
+	## which is often the target it just killed, and the rebuild above has
+	## already drawn the newcomer there. Freeing that body would leave the
+	## Spider invisible until some later delta rebuilt the picture.
 	func hide_unit(slot: int) -> void:
 		main._land_current_delta()
-		if main._units != null:
-			var _was: bool = main._units.hide_now(slot)
+		if main._units == null:
+			return
+		var at: World = main.shown()
+		if at != null:
+			var view: Dictionary = at.unit_view(slot)
+			if not view.is_empty() and DictRead.as_int(view["hp"]) > 0:
+				return
+		var _was: bool = main._units.hide_now(slot)
 
 	func suppress_unit(slot: int) -> void:
 		if main._units != null:

@@ -392,15 +392,36 @@ func sync_land(records: Array[Dictionary]) -> int:
 			changed += 1
 		_land_ids[id] = found
 		claimed[found] = true
+	# Every inserted object stands for a table record, so one nobody claimed
+	# is a record the table lost before any sync met it -- a drop drawn and
+	# its hatch skipped in the same run. Left alone it would stand for ever,
+	# and [method pose_record] would carry it into every save.
+	for key: Variant in _inserted.keys():
+		var node: Node3D = key
+		if is_instance_valid(node) and not claimed.has(node):
+			changed += _free_node(node)
 	return changed
 
 
-## Free one placed object and forget it everywhere.
+## Free one placed object whose cell is not known -- a platform may have
+## carried it off its home -- and forget it everywhere.
+##
+## Unlike [method remove_objects] the cell does **not** join the removed
+## list: a record the table lost is put right by the next sync after a load,
+## and a removed cell would free every object standing there on restore.
 func _free_node(instance: Node3D) -> int:
 	if not is_instance_valid(instance):
 		return 0
 	for key: int in _by_cell:
 		_by_cell[key].erase(instance)
+	_forget(instance)
+	_removed += 1
+	return 1
+
+
+## Drop a placed object from every per-node index and free it. The cell
+## index is the caller's, since only the caller knows which cell to look in.
+func _forget(instance: Node3D) -> void:
 	_authored.erase(instance)
 	_origin.erase(instance)
 	_pivots.erase(instance)
@@ -411,8 +432,6 @@ func _free_node(instance: Node3D) -> int:
 	_inserted.erase(instance)
 	instance.get_parent().remove_child(instance)
 	instance.free()
-	_removed += 1
-	return 1
 
 
 ## Draw an inserted object `height` world units above where it was inserted,
@@ -688,16 +707,7 @@ func remove_objects(cell: int) -> int:
 	for node: Variant in objects_on(cell):
 		var instance: Node3D = node
 		_by_cell[cell].erase(instance)
-		_authored.erase(instance)
-		_origin.erase(instance)
-		_pivots.erase(instance)
-		_joints.erase(instance)
-		_authored_joints.erase(instance)
-		_yaw.erase(instance)
-		_home.erase(instance)
-		_inserted.erase(instance)
-		instance.get_parent().remove_child(instance)
-		instance.free()
+		_forget(instance)
 		gone += 1
 	_removed += gone
 	if gone > 0 and not _removed_cells.has(cell):

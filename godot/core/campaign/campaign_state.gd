@@ -284,8 +284,10 @@ func recruit_preset(player: int, speech: int, preset: Dictionary,
 			equipment_rows.get(item, {})).get("cost", 0))
 	var price: int = cost / PRESET_PRICE_STEP * PRESET_PRICE_STEP
 	# `0x00455EDF`: the row is offered only while its **unrounded** cost is
-	# within the purse, so that is the test here too.
-	if points(player) < cost:
+	# within the purse, so that is the test here too. A slot not in the game
+	# is refused with it: [method spend_points] would refuse the spend below,
+	# after the soldier had already been hired.
+	if not _in_game(player) or points(player) < cost:
 		return {"result": Upgrade.NO_POINTS, "slot": Roster.NO_SLOT,
 			"cost": price}
 	if roster.first_free() == Roster.NO_SLOT:
@@ -313,7 +315,8 @@ func recruit_preset(player: int, speech: int, preset: Dictionary,
 	# refunds its whole price -- until a weapon purchase rewrites it.
 	unit.resale = cost / PRESET_PRICE_STEP
 	roster.put(slot, unit)
-	var _spent: bool = spend_points(player, price)
+	var spent: bool = spend_points(player, price)
+	assert(spent, "recruit_preset: the purse gate above admitted a spend it refuses")
 	return {"result": Upgrade.OK, "slot": slot, "cost": price}
 
 

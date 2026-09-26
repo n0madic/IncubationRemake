@@ -170,12 +170,10 @@ func save_to_disk() -> bool:
 		ProjectSettings.globalize_path(path.get_base_dir()))
 	if made != OK and made != ERR_ALREADY_EXISTS:
 		return false
-	var file: FileAccess = FileAccess.open(path, FileAccess.WRITE)
-	if file == null:
-		return false
-	file.store_string(JSON.stringify(view(), "  ", true, true))
-	file.close()
-	return true
+	# Replaced whole or not at all: a truncated document is one
+	# [method load_from_disk] refuses, and every setting would go with it.
+	return AtomicFile.write(path,
+		JSON.stringify(view(), "  ", true, true).to_utf8_buffer())
 
 
 func view() -> Dictionary:

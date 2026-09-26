@@ -210,6 +210,16 @@ func _presets(h: TestHarness) -> void:
 	h.equal("preset.unlisted_id", DictRead.as_string(
 		host.recruit_preset(34)["result"]), Upgrade.BAD_ID,
 		"34 has a Txtmod_h name and no arm")
+	# A seat not in the game is refused at the gate, not hired and then
+	# left unpaid by a spend that refuses it.
+	var absent: int = state.player_kind.find(0)
+	if absent >= 0:
+		state.set_points(absent, 5000)
+		var free_hire: Dictionary = state.recruit_preset(absent, 1,
+			{"weapon": 0, "markup": 10}, "nobody", costs, {}, {}, 10)
+		h.equal("preset.refused_for_a_seat_not_in_the_game",
+			[DictRead.as_string(free_hire["result"]), state.points(absent)],
+			[Upgrade.NO_POINTS, 5000])
 
 
 ## The fixture must have been emitted from **this** corpus and **this** model.

@@ -1279,6 +1279,15 @@ func _check_land_sync(h: TestHarness) -> void:
 	h.equal("land_sync.a_lost_record_is_freed",
 		[scenery.sync_land(state.land_objects()), scenery.object_count()],
 		[1, before + 1])
+	# A node an event drew whose record went before any sync met it -- the
+	# drop drawn, its hatch skipped -- is freed, not left standing for ever.
+	var _orphan: bool = scenery.insert_object(model, Vector3i(9600, 3200, 0), 5)
+	h.equal("land_sync.an_unclaimed_inserted_node_is_freed",
+		[scenery.sync_land(state.land_objects()), scenery.object_count()],
+		[1, before + 1])
+	h.equal("land_sync.and_leaves_the_pose_record",
+		DictRead.as_array(scenery.pose_record().get("inserted", [])).size(), 2,
+		"the two records the table still has")
 	scenery.free()
 
 
