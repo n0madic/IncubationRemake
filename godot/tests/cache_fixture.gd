@@ -11,9 +11,6 @@ extends RefCounted
 ## serialisation -- and there is none to diff around, because the two trees come
 ## out of the same function.
 
-## The development tree, the last resort of [method CacheLoader.locate] and
-## this fixture's fallback when nothing else checks out.
-const DEV_CACHE_DIR: String = CacheLoader.DEV_CACHE
 const SLICE_MISSION: String = "_C_115"
 
 ## Where the answer of the first [method cache_dir] call is kept for the rest
@@ -48,7 +45,7 @@ static func cache_dir() -> String:
 	if Engine.has_meta(CACHE_DIR_META):
 		return DictRead.as_string(Engine.get_meta(CACHE_DIR_META))
 	var opened: Dictionary = CacheLoader.locate(OS.get_cmdline_user_args())
-	var dir: String = DEV_CACHE_DIR
+	var dir: String = CacheLoader.DEV_CACHE
 	if DictRead.as_bool(opened["ok"]):
 		dir = DictRead.as_string(opened["cache_dir"])
 	Engine.set_meta(CACHE_DIR_META, dir)

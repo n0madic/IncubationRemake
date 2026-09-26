@@ -86,56 +86,14 @@ static func active_cache_dir(caches_dir: String = CACHES_DIR) -> String:
 ## Every reason to refuse this cache; empty means it is good.  The full
 ## sweep: every file is read and its SHA-256 recomputed.
 static func verify(cache_dir: String, manifest: Dictionary) -> PackedStringArray:
-	var problems: PackedStringArray = _document_problems(manifest)
-	# **A cache already refused by name is not swept.**  A missing manifest or
-	# a wrong version refuses the whole cache, so the sweep below could only add
-	# per-file noise to a message that is already decided -- and a cache
-	# another converter built is *expected* to differ file by file.
-	if not problems.is_empty():
-		return problems
-	var inventory: Array = DictRead.as_array(manifest.get("inventory", []))
-	if inventory.is_empty():
-		problems.append("the manifest declares no files")
-	for entry: Variant in inventory:
-		var record: Dictionary = DictRead.as_dict(entry)
-		var rel: String = DictRead.as_string(record["path"])
-		var path: String = cache_dir + "/" + rel
-		if not FileAccess.file_exists(path):
-			problems.append("%s: missing" % rel)
-			continue
-		var data: PackedByteArray = FileAccess.get_file_as_bytes(path)
-		if data.size() != DictRead.as_int(record["size"]):
-			problems.append("%s: %d bytes, expected %d"
-				% [rel, data.size(), DictRead.as_int(record["size"])])
-			continue
-		if _sha256(data) != DictRead.as_string(record["sha256"]):
-			problems.append("%s: digest mismatch" % rel)
-	return problems
+	return _problems(cache_dir, manifest, true)
 
 
 ## Every reason to refuse this cache that can be found without reading its
 ## files: the versions, and each inventory entry's presence and length.
 static func quick_check(cache_dir: String, manifest: Dictionary) \
 		-> PackedStringArray:
-	var problems: PackedStringArray = _document_problems(manifest)
-	if not problems.is_empty():
-		return problems
-	var inventory: Array = DictRead.as_array(manifest.get("inventory", []))
-	if inventory.is_empty():
-		problems.append("the manifest declares no files")
-	for entry: Variant in inventory:
-		var record: Dictionary = DictRead.as_dict(entry)
-		var rel: String = DictRead.as_string(record["path"])
-		var file: FileAccess = FileAccess.open(cache_dir + "/" + rel,
-			FileAccess.READ)
-		if file == null:
-			problems.append("%s: missing" % rel)
-			continue
-		var length: int = file.get_length()
-		if length != DictRead.as_int(record["size"]):
-			problems.append("%s: %d bytes, expected %d"
-				% [rel, length, DictRead.as_int(record["size"])])
-	return problems
+	return _problems(cache_dir, manifest, false)
 
 
 ## Opens the cache in `cache_dir`: the quick check, or the full sweep when
@@ -153,16 +111,6 @@ static func open_dir(cache_dir: String, full: bool = false) -> Dictionary:
 		"manifest": manifest}
 
 
-## The published cache `active.json` names, opened like any other directory.
-static func open_active(caches_dir: String = CACHES_DIR,
-		full: bool = false) -> Dictionary:
-	var cache_dir: String = active_cache_dir(caches_dir)
-	if cache_dir == "":
-		return {"ok": false, "reason": FIRST_RUN_HINT % caches_dir,
-			"cache_dir": "", "manifest": {}}
-	return open_dir(cache_dir, full)
-
-
 ## The first cache source that exists, in the order the header gives, opened.
 ## `args` are the command-line arguments (`--cache=`, `--verify-cache`); the
 ## other parameters exist so the suites can walk the order over directories
@@ -176,8 +124,9 @@ static func locate(args: PackedStringArray,
 			return open_dir(arg.trim_prefix(CACHE_ARG), full)
 	if has_manifest(bundled):
 		return open_dir(bundled, full)
-	if not active_cache_dir(caches_dir).is_empty():
-		return open_active(caches_dir, full)
+	var active: String = active_cache_dir(caches_dir)
+	if not active.is_empty():
+		return open_dir(active, full)
 	if has_manifest(dev):
 		return open_dir(dev, full)
 	return {"ok": false, "reason": FIRST_RUN_HINT % caches_dir,
@@ -188,6 +137,37 @@ static func locate(args: PackedStringArray,
 ## `make data` leaves the directory standing with nothing in it.
 static func has_manifest(cache_dir: String) -> bool:
 	return FileAccess.file_exists(cache_dir + "/" + MANIFEST_NAME)
+
+
+static func _problems(cache_dir: String, manifest: Dictionary, full: bool) \
+		-> PackedStringArray:
+	var problems: PackedStringArray = _document_problems(manifest)
+	# **A cache already refused by name is not swept.**  A missing manifest or
+	# a wrong version refuses the whole cache, so the sweep below could only add
+	# per-file noise to a message that is already decided -- and a cache
+	# another converter built is *expected* to differ file by file.
+	if not problems.is_empty():
+		return problems
+	var inventory: Array = DictRead.as_array(manifest.get("inventory", []))
+	if inventory.is_empty():
+		problems.append("the manifest declares no files")
+	for entry: Variant in inventory:
+		var record: Dictionary = DictRead.as_dict(entry)
+		var rel: String = DictRead.as_string(record["path"])
+		var file: FileAccess = FileAccess.open(cache_dir + "/" + rel,
+			FileAccess.READ)
+		if file == null:
+			problems.append("%s: missing" % rel)
+			continue
+		var length: int = file.get_length()
+		if length != DictRead.as_int(record["size"]):
+			problems.append("%s: %d bytes, expected %d"
+				% [rel, length, DictRead.as_int(record["size"])])
+			continue
+		if full and sha256_hex(file.get_buffer(length)) \
+				!= DictRead.as_string(record["sha256"]):
+			problems.append("%s: digest mismatch" % rel)
+	return problems
 
 
 static func _document_problems(manifest: Dictionary) -> PackedStringArray:
@@ -206,7 +186,7 @@ static func _document_problems(manifest: Dictionary) -> PackedStringArray:
 	return problems
 
 
-static func _sha256(data: PackedByteArray) -> String:
+static func sha256_hex(data: PackedByteArray) -> String:
 	var ctx: HashingContext = HashingContext.new()
 	var started: Error = ctx.start(HashingContext.HASH_SHA256)
 	assert(started == OK)

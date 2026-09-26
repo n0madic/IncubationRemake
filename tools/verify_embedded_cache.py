@@ -42,18 +42,20 @@ FORBIDDEN_PREFIXES = tuple(f"{root}assets/{sub}"
 IMPORTED_SUFFIXES = (".import", ".remap")
 
 
-def _check_forbidden(names: list[str]) -> None:
+def _names(apk: zipfile.ZipFile) -> list[str]:
+    """The archive's entry names, refused if any is under a forbidden prefix."""
+    names = apk.namelist()
     for name in names:
         if name.startswith(FORBIDDEN_PREFIXES):
             raise ValueError(f"package unexpectedly includes {name}")
+    return names
 
 
 def verify(apk_path: Path, expect_manifest: Path | None = None) -> tuple[int, int]:
     if not apk_path.is_file():
         raise ValueError(f"APK does not exist: {apk_path}")
     with zipfile.ZipFile(apk_path) as apk:
-        names = apk.namelist()
-        _check_forbidden(names)
+        names = _names(apk)
         prefix = next((candidate for candidate in CACHE_PREFIXES
                        if candidate + "manifest.json" in names), None)
         if prefix is None:
@@ -102,8 +104,7 @@ def verify_absent(apk_path: Path) -> None:
     if not apk_path.is_file():
         raise ValueError(f"APK does not exist: {apk_path}")
     with zipfile.ZipFile(apk_path) as apk:
-        names = apk.namelist()
-        _check_forbidden(names)
+        names = _names(apk)
         carried = next((name for name in names
                         if name.startswith(CACHE_PREFIXES)), None)
         if carried is not None:

@@ -209,15 +209,12 @@ static func _located(opened: Dictionary) -> String:
 static func _write_tiny_cache(cache: String) -> void:
 	var body: String = '{"x":1}'
 	_write_text(cache + "/tables/tiny.json", body)
-	var ctx: HashingContext = HashingContext.new()
-	var _started: Error = ctx.start(HashingContext.HASH_SHA256)
-	var _updated: Error = ctx.update(body.to_utf8_buffer())
 	_write_text(cache + "/" + CacheLoader.MANIFEST_NAME, JSON.stringify({
 		"cache_schema_version": CacheLoader.CACHE_SCHEMA_VERSION,
 		"converter_version": CacheLoader.CONVERTER_VERSION,
 		"inventory": [{"path": "tables/tiny.json",
 			"size": body.to_utf8_buffer().size(),
-			"sha256": ctx.finish().hex_encode()}],
+			"sha256": CacheLoader.sha256_hex(body.to_utf8_buffer())}],
 	}))
 
 

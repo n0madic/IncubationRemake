@@ -166,11 +166,7 @@ CONVERTER_SOURCES := $(wildcard tools/*.py tools/inclib/*.py)
 # length of the export, so no preset can pick it up, and the trap takes it
 # away again however the export ends.
 NO_CACHE ?=
-ifeq ($(NO_CACHE),)
-BUILD_DATA := data
-else
-BUILD_DATA :=
-endif
+BUILD_DATA := $(if $(NO_CACHE),,data)
 
 # $(call godot_export,PRESET,OUTPUT) -- re-import first, so the export sees
 # the data directory exactly as it is now (converted, or hidden by NO_CACHE).
@@ -236,11 +232,8 @@ build-linux: check-godot $(BUILD_DATA)
 
 build-android: check-godot $(BUILD_DATA)
 	$(call godot_export,Android,Incubation-remake.apk)
-ifeq ($(NO_CACHE),)
-	$(PYTHON) tools/verify_embedded_cache.py $(GODOT_DIR)/$(EXPORT_DIR)/Incubation-remake.apk --expect-manifest $(DATA_MANIFEST)
-else
-	$(PYTHON) tools/verify_embedded_cache.py $(GODOT_DIR)/$(EXPORT_DIR)/Incubation-remake.apk --absent
-endif
+	$(PYTHON) tools/verify_embedded_cache.py $(GODOT_DIR)/$(EXPORT_DIR)/Incubation-remake.apk \
+		$(if $(NO_CACHE),--absent,--expect-manifest $(DATA_MANIFEST))
 
 build-ios: check-godot $(BUILD_DATA)
 	@test -n "$(IOS_TEAM_ID)" || { \
