@@ -98,10 +98,6 @@ WEAPON_ALTERNATE_MIN = 20
 STIMULANT_SPENT = 255
 
 
-class TurnError(Exception):
-    """Raised when the model is handed turn state it cannot advance."""
-
-
 # ---------------------------------------------------------------------------
 # State
 # ---------------------------------------------------------------------------

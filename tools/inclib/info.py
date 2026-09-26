@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from typing import Any, Iterable
+from typing import Any
 
 from . import lcl
 
@@ -445,8 +445,3 @@ def load_info_file(path: str,
     except lcl.LclSyntaxError as exc:
         raise InfoError(f"{path}: {exc}") from exc
     return parse_program(program, path)
-
-
-def iter_delays(tables: BalanceTables) -> Iterable[tuple[int, int]]:
-    for index, row in sorted(tables.ctrlmap.items()):
-        yield index, row.delay

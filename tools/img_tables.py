@@ -61,12 +61,6 @@ def expected_trig() -> list[int]:
             for i in range(TRIG_ENTRIES)]
 
 
-def read_u16(path: str) -> list[int]:
-    with open(path, "rb") as fh:
-        data = fh.read()
-    return list(struct.unpack(f"<{len(data) // 2}H", data))
-
-
 def as_signed(values: list[int]) -> list[int]:
     return [v - 0x10000 if v >= 0x8000 else v for v in values]
 

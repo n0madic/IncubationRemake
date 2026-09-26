@@ -240,11 +240,6 @@ def _reads(rows: list[dict[str, Any]], call: str,
     return out
 
 
-def _all_reads(rows: list[dict[str, Any]]) -> list[dict[str, str]]:
-    return [dict(row.get("reads") or {}) for row in rows
-            if row.get("reads")]
-
-
 def _results(rows: list[dict[str, Any]], call: str) -> list[int]:
     out: list[int] = []
     for row in rows:
@@ -274,7 +269,6 @@ def _prologue(slot: int, with_cells: bool = True,
     return lines
 
 
-_blob_name = gold.blob_name
 _writeb = gold.writeb
 
 

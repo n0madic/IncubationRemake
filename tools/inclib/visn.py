@@ -34,7 +34,7 @@ from __future__ import annotations
 import logging
 import struct
 from dataclasses import dataclass
-from typing import Iterator, Sequence
+from typing import Sequence
 
 from .binio import open_reader
 
@@ -965,15 +965,3 @@ def read_din_index(path: str) -> list[ContainerEntry]:
         size = reader.u32()
         entries.append(ContainerEntry(index, name, offset, size))
     return entries
-
-
-def iter_records(lib_path: str, index_path: str) -> Iterator[tuple[ContainerEntry, bytes]]:
-    """Yield ``(entry, raw_record_bytes)`` for every record in a container."""
-    with open(lib_path, "rb") as fh:
-        data = fh.read()
-    for entry in read_din_index(index_path):
-        if entry.offset + entry.size > len(data):
-            raise VisnError(
-                f"{lib_path}: entry {entry.name!r} runs past the end of the file"
-            )
-        yield entry, data[entry.offset:entry.offset + entry.size]

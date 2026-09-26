@@ -146,12 +146,6 @@ def shipped_animations(root: str) -> dict[str, str]:
     return _stems(os.path.join(root, ANIMATIONS_DIR, "*.cha"))
 
 
-def selectable_keys(tables: SelectorTables) -> list[SelectorKey]:
-    """Every key for which the model selector returns a body."""
-    return [key for key, outcomes in tables.tables["model"].items()
-            if any(o.name for o in outcomes)]
-
-
 # ---------------------------------------------------------------------------
 # The checks
 # ---------------------------------------------------------------------------

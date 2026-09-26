@@ -450,17 +450,6 @@ def mat_mul(a: Mat4 | tuple[float, ...], b: Mat4 | tuple[float, ...]) -> Mat4:
     return out
 
 
-def mat_transform_point(m: Mat4 | tuple[float, ...],
-                        v: tuple[float, float, float]) -> tuple[float, float, float]:
-    """``M * v`` for a column vector with implicit w = 1 (0x004826d0)."""
-    x, y, z = v
-    return (
-        m[0] * x + m[1] * y + m[2] * z + m[3],
-        m[4] * x + m[5] * y + m[6] * z + m[7],
-        m[8] * x + m[9] * y + m[10] * z + m[11],
-    )
-
-
 def mat_translation(m: Mat4 | tuple[float, ...]) -> tuple[float, float, float]:
     """Translation column of a row-major ``M * v`` matrix (0x004828cd)."""
     return (m[3], m[7], m[11])

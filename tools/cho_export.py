@@ -70,11 +70,6 @@ def write_obj(path: str, pose: Pose, source: str) -> None:
             fh.write(f"l {index[parent]} {index[child]}\n")
 
 
-def _project(joints, axes: tuple[int, int]):
-    ax, ay = axes
-    return [(p[ax], p[ay]) for p in joints]
-
-
 def write_sheet(path: str, poses: list[Pose], cell: int = 220,
                 columns: int = 6) -> None:
     """Draw the poses as an orthographic contact sheet (X right, Z up)."""

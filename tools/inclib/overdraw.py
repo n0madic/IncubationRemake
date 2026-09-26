@@ -467,11 +467,3 @@ def walk_census(proto: protomod.Prototype) -> WalkCensus:
         if max(near) > min(far) + _STRADDLE_SLACK:
             total = total + WalkCensus(straddling=1)
     return total
-
-
-def census_of(prototypes: Iterable[protomod.Prototype]) -> Census:
-    total = Census()
-    for proto in prototypes:
-        if proto.tree is not None:
-            total = total + census(proto)
-    return total

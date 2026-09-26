@@ -14,10 +14,12 @@ godot/generated/
 godot/android_payload/
 godot/export/
 
-# The Wine harnesses' build products. Both are rebuilt from the committed
+# The Wine harnesses' build products. Each is rebuilt from the committed
 # source with one i686-w64-mingw32 command; see tools/dbgcall/README.md.
 tools/dbgcall/*.exe
+tools/wine_control/*.exe
 tools/wine_visn/*.exe
+tools/wine_visn/build/
 
 # Native captures: derived from Blue Byte data, like tools/out/.
 # The committed README.md beside them records what each one pins.

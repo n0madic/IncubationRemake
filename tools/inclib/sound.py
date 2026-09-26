@@ -33,7 +33,7 @@ Static source: ``gog_incubation/Incubation.exe`` (SHA-256
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Iterable, Mapping, Optional, Sequence
+from typing import Iterable, Mapping, Optional
 
 
 class SoundError(Exception):
@@ -541,7 +541,7 @@ class VoiceCursors:
         **The mute of :attr:`MUTE_TYPES` covers this too**, and the machine's
         explosion with it: every arm of the cascade -- ``0x0040C9AC`` from the
         explosion, ``0x0040C9E6`` and its neighbours from the screams --
-        ``jmp``\ s to ``0x0040CBD6``, and the type test at ``0x0040CBDB`` is
+        jumps to ``0x0040CBD6``, and the type test at ``0x0040CBDB`` is
         the next thing after it.  The cursor advances either way, because the
         gate is past the round robin that picked the wave.
         """

@@ -105,6 +105,9 @@ hud_tables.py         verify the battle interface against the game and its art (
 language_tables.py    pin the engine's language switch chain
 pe_exports.py         list the shipped binaries' PE export tables against the
                       committed listings
+exports/              those listings, one .lst per original library
+verify_untouched.sh   snapshot the game installation and prove nothing under it
+                      was added or changed
 
 lcl_runtime.py        run an executable model over the corpus (--check):
 turn_runtime.py         the LCL interpreter (docs/20), the turn (docs/25),
@@ -124,7 +127,10 @@ ai_gold.py              capture; see dbgcall/README.md, "The gold tools"
 blob_gold.py
 presentation_gold.py
 hud_probe.py
+dbgcall/              call functions inside a live Incubation.exe or
+                      iDesigner.exe under Wine (C++ debugger harness)
 dbgcall_patches.py    generate dbgcall --poke/--code arguments for Incubation.exe
+wine_control/         inc_control.exe: read a running game's memory from outside
 
 agent_client.py       drive a running remake build over its control server:
                       state, screenshot and commands, answered while a command
@@ -249,10 +255,9 @@ For a graphical `--resume` run, use the virtual-desktop `cmd /c` recipe in
 passing the long command directly to `explorer` can lose its arguments, while
 plain Wine can fail in the display path even after every poke succeeds.
 
-`inc_control.exe PROCESS readmem ADDRESS LENGTH` reads the trace buffer from
-outside while the game is still running. `inc_probe.exe` is retained as the
-failed Win32 Debug API control; it is not the recommended transport on the
-tested Wine build.
+`inc_control.exe PROCESS readmem ADDRESS LENGTH` (built by
+`wine_control/build.sh`) reads the trace buffer from outside while the game is
+still running.
 
 `Work/Saves/` ships empty, so those four are shown for when a real save exists;
 `sav_parse.py` exits non-zero rather than pretending to have checked something.

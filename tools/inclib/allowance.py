@@ -60,10 +60,6 @@ DIFFICULTY_TWEAK_TYPE = 0x32
 AI_LEVELS = (0, 1, 2)
 
 
-class AllowanceError(Exception):
-    """Raised when the formula is handed state it cannot evaluate."""
-
-
 @dataclass(frozen=True)
 class AllowanceUnit:
     """Everything ``0x00475160`` and its Banner scan read from a unit record."""
@@ -150,21 +146,3 @@ def movement_allowance(mover: AllowanceUnit, mp_max: int,
     if mover.action_state in ACTION_STATE_SUPPRESSED:
         total = 0
     return total
-
-
-def unit_from_record(raw: bytes, slot: int, *, offsets: dict[str, int],
-                     equipment_slots: int) -> AllowanceUnit:
-    """One live ``unit`` record from the engine's array into :class:`AllowanceUnit`."""
-    equipment = raw[offsets["equipment"]:offsets["equipment"] + equipment_slots]
-    return AllowanceUnit(
-        slot=slot,
-        type_id=raw[offsets["type"]],
-        player=raw[offsets["player"]],
-        x=raw[offsets["x"]],
-        y=raw[offsets["y"]],
-        hp=raw[offsets["hp"]],
-        fp=raw[offsets["fp"]],
-        rested=raw[offsets["rested"]],
-        action_state=raw[offsets["action_state"]],
-        equipment_ids=frozenset(i for i, v in enumerate(equipment) if v),
-    )

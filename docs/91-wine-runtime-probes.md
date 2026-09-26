@@ -393,10 +393,6 @@ from that line and handed to
 `tools/wine_control/inc_control.exe PID readmem ADDR LEN`, which reads it from
 outside while the game is still running.
 
-`tools/wine_control/inc_probe.exe` is the minimal Win32 Debug API experiment
-described in §3. It builds successfully but is not a working transport on the
-tested Wine configuration; it is kept as the negative control.
-
 The three INT3 modes the old generator offered are gone. `dbgcall --bp` plants
 breakpoints properly, and §3 is the record of why an INT3 in the gameplay path
 is the wrong instrument here regardless of who writes it.
