@@ -157,7 +157,7 @@ func _invariant(h: TestHarness) -> void:
 	var loaded: Dictionary = CacheFixture.load_mission(MISSION)
 	if loaded.is_empty():
 		h.check("invariant.cache_present", false,
-			"no cache: run remake_convert.py --dev-fixtures")
+			CacheFixture.missing_hint())
 		return
 	h.check("invariant.cache_present", true, MISSION)
 	var world: World = loaded["world"]

@@ -63,7 +63,7 @@ func run(h: TestHarness) -> void:
 	var loaded: Dictionary = CacheFixture.load_mission(MISSION)
 	if loaded.is_empty():
 		h.check("cache", false,
-			"no %s in the cache; run tools/remake_convert.py" % MISSION)
+			"no %s: %s" % [MISSION, CacheFixture.missing_hint()])
 		return
 	var world: World = loaded["world"]
 	h.check("script.attached", DictRead.as_bool(loaded["script_attached"]),

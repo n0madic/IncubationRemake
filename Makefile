@@ -131,17 +131,11 @@ fixtures:
 	$(PYTHON) tools/presentation_gold.py --emit-special-cases tests/fixtures/presentation/cases_special.json --root $(GAME_ROOT)
 	$(PYTHON) tools/hud_tables.py --emit-cases tests/fixtures/hud/cases_hud.json --root $(GAME_ROOT)
 
-# The converted game data every build carries. `make data` writes it to
-# ignored godot/data/cache with a keep-importer `.import` sidecar beside each
-# PNG/WAV/OGG, and every export preset's include_filter takes the JSON
-# documents, so a plain export puts the directory into the game's own package
-# unimported: the PCK inside the .app, the .pck beside the .exe, the APK, the
-# IPA (docs/92 section 10.1). It is never a repository asset.
-#
-# It is a build **product**, not a step: converting the whole campaign takes
-# about a minute and 250 MiB, and every build used to pay it. It is rebuilt
-# when the converter changes, when this file changes, or when the arguments it
-# was built with change; `make data-force` rebuilds it unconditionally.
+# The converted game data every build carries inside its own package, and how
+# it gets there unimported, are docs/92 section 3.2. It is a build **product**,
+# not a step: it is rebuilt when the converter changes, when this file changes,
+# or when the arguments it was built with change; `make data-force` rebuilds it
+# unconditionally. It is never a repository asset.
 #
 # The stamp is a file of its own and **not** the cache's own manifest: the
 # converter refuses to replace a `cache/` directory that does not look like one
@@ -168,6 +162,11 @@ CONVERTER_SOURCES := $(wildcard tools/*.py tools/inclib/*.py)
 NO_CACHE ?=
 BUILD_DATA := $(if $(NO_CACHE),,data)
 
+# After the import and before any export, for every platform: each media file
+# of the data must still be kept, or the package would carry an imported
+# resource where the manifest pins raw bytes.
+KEPT_CHECK := $(if $(NO_CACHE),,$(PYTHON) tools/verify_embedded_cache.py --kept $(DATA_DIR)/cache &&)
+
 # $(call godot_export,PRESET,OUTPUT) -- re-import first, so the export sees
 # the data directory exactly as it is now (converted, or hidden by NO_CACHE).
 define godot_export
@@ -177,6 +176,7 @@ define godot_export
 		trap 'rm -f $(DATA_DIR)/.gdignore' EXIT INT TERM; \
 	fi; \
 	$(GODOT) --headless --path $(GODOT_DIR) --import && \
+	$(KEPT_CHECK) \
 	$(GODOT) --headless --path $(GODOT_DIR) --export-$(EXPORT_MODE) $(1) $(EXPORT_DIR)/$(2)
 endef
 
@@ -200,11 +200,13 @@ _data-key:
 	fi
 
 $(DATA_STAMP): $(CONVERTER_SOURCES) $(MAKEFILE_LIST)
-	$(PYTHON) tools/remake_convert.py $(DATA_ARGS) --dev-fixtures $(DATA_DIR)
+	$(PYTHON) tools/remake_convert.py $(DATA_ARGS) --bundle $(DATA_DIR)
 	@printf '%s' '$(DATA_ARGS)' > "$(DATA_KEY)"
 	@touch "$(DATA_STAMP)"
 
-test-godot: check-godot
+# The suites read the bundled data, `godot/data/cache`, in the editor and
+# inside the export alike (`tests/cache_fixture.gd`), so both bring it up to date.
+test-godot: check-godot data
 	bash $(GODOT_DIR)/run_tests.sh $(GODOT)
 
 test-touch: check-godot
@@ -214,7 +216,7 @@ test-touch: check-godot
 # window, and takes three minutes. Always a debug export -- the leak gate it
 # exists for reads diagnostics a release template strips -- so EXPORT_MODE is
 # not passed on.
-test-export: check-godot
+test-export: check-godot data
 	bash $(GODOT_DIR)/run_export_tests.sh $(GODOT)
 
 test: check-formats check-cache test-godot

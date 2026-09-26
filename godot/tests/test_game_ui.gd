@@ -3977,11 +3977,8 @@ func _briefing_around_a_mission(h: TestHarness) -> void:
 func _upgrade_marines(h: TestHarness) -> void:
 	var loaded: Dictionary = CacheFixture.load_world("upgrade_1")
 	if loaded.is_empty():
-		# A cache published without `--campaign-maps` carries no upgrade
-		# scene. That is a thinner cache and not a failure -- but say which,
-		# so a run that quietly checked nothing cannot read as a pass.
 		h.check("marines.cache", false,
-			"no upgrade_1 in the cache; publish with --campaign-maps")
+			"no upgrade_1: " + CacheFixture.missing_hint())
 		return
 	var world: World = loaded["world"]
 	# The corpus half, which needs no library: three living player-0 records.

@@ -21,10 +21,12 @@ extends TestSuite
 
 func run(h: TestHarness) -> void:
 	h.begin("cache", TestHarness.ORACLE_SPEC)
+	# **The cache every suite reads, named.**  A refused one is this failure,
+	# not a fallback to whatever other cache the machine happens to hold.
+	h.equal("fixture.bundled", CacheFixture.refusal(), "",
+		"suites read %s" % CacheFixture.cache_dir())
 	var manifest: Dictionary = CacheFixture.manifest()
 	if manifest.is_empty():
-		h.check("fixture", false,
-			"run tools/remake_convert.py --dev-fixtures godot/generated")
 		return
 
 	h.equal("manifest.schema",
@@ -145,42 +147,39 @@ func run(h: TestHarness) -> void:
 
 
 ## [method CacheLoader.locate]'s order over caches of this suite's own:
-## `--cache=`, then the bundled data, then the player's published cache, then
-## the development tree -- and a source that exists but does not check out is
-## refused, never skipped for the next one.
+## `--cache=`, then the bundled data, then the player's published cache -- and
+## a source that exists but does not check out is refused, never skipped for
+## the next one.
 static func _check_locate(h: TestHarness) -> void:
 	var root: String = "user://tests/cache_locate"
 	_remove_tree(ProjectSettings.globalize_path(root))
 	var bundled: String = root + "/bundled"
 	var caches: String = root + "/caches"
 	var published: String = caches + "/1-test"
-	var dev: String = root + "/dev"
 	var forced: String = root + "/forced"
-	for cache: String in [bundled, published, dev, forced]:
+	for cache: String in [bundled, published, forced]:
 		_write_tiny_cache(cache)
 	_write_text(caches + "/" + CacheLoader.ACTIVE_NAME,
 		JSON.stringify({"cache_id": "1-test"}))
 	var none: PackedStringArray = PackedStringArray()
 
 	h.equal("locate.bundled_first", _located(
-		CacheLoader.locate(none, bundled, caches, dev)), bundled)
+		CacheLoader.locate(none, bundled, caches)), bundled)
 	h.equal("locate.forced_wins", _located(CacheLoader.locate(
-		PackedStringArray([CacheLoader.CACHE_ARG + forced]), bundled, caches,
-		dev)), forced)
+		PackedStringArray([CacheLoader.CACHE_ARG + forced]), bundled,
+		caches)), forced)
 	h.equal("locate.published_second", _located(
-		CacheLoader.locate(none, root + "/absent", caches, dev)), published)
-	h.equal("locate.dev_last", _located(CacheLoader.locate(
-		none, root + "/absent", root + "/no-caches", dev)), dev)
+		CacheLoader.locate(none, root + "/absent", caches)), published)
 	var nothing: Dictionary = CacheLoader.locate(none, root + "/absent",
-		root + "/no-caches", root + "/absent")
+		root + "/no-caches")
 	h.check("locate.first_run_hint",
 		not DictRead.as_bool(nothing["ok"]) and DictRead.as_string(
 			nothing["reason"]).contains("remake_convert.py"))
 
 	# A bundled cache that fails its check is refused by name: the published
-	# and development caches behind it do not quietly take its place.
+	# cache behind it does not quietly take its place.
 	_write_text(bundled + "/tables/tiny.json", "{}")
-	var broken: Dictionary = CacheLoader.locate(none, bundled, caches, dev)
+	var broken: Dictionary = CacheLoader.locate(none, bundled, caches)
 	h.check("locate.broken_refused_not_skipped",
 		not DictRead.as_bool(broken["ok"])
 		and DictRead.as_string(broken["reason"]).contains("bytes"),
@@ -189,9 +188,9 @@ static func _check_locate(h: TestHarness) -> void:
 	# full sweep (`--verify-cache`) sees the digest.
 	_write_text(bundled + "/tables/tiny.json", '{"x":2}')
 	h.check("locate.quick_misses_same_size_damage", DictRead.as_bool(
-		CacheLoader.locate(none, bundled, caches, dev)["ok"]))
+		CacheLoader.locate(none, bundled, caches)["ok"]))
 	var full: Dictionary = CacheLoader.locate(PackedStringArray(
-		[CacheLoader.VERIFY_ARG]), bundled, caches, dev)
+		[CacheLoader.VERIFY_ARG]), bundled, caches)
 	h.check("locate.verify_arg_sweeps", not DictRead.as_bool(full["ok"])
 		and DictRead.as_string(full["reason"]).contains("digest"),
 		DictRead.as_string(full["reason"]))

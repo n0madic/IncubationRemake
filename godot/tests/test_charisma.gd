@@ -839,7 +839,7 @@ func _unnamed_part(h: TestHarness) -> void:
 		"%s/models/PC_011.json" % cache_dir)
 	if document.is_empty():
 		h.check("unnamed.model_present", false,
-			"the cache carries no PC_011 -- publish one with --campaign-maps")
+			"no PC_011: " + CacheFixture.missing_hint())
 		return
 	var model: CharismaModel = CharismaModel.from_document(document)
 	var empty: int = 0

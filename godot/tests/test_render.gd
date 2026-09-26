@@ -23,7 +23,7 @@ func run(h: TestHarness) -> void:
 	var loaded: Dictionary = CacheFixture.load_slice_world()
 	if loaded.is_empty():
 		h.check("fixture", false,
-			"run tools/remake_convert.py --dev-fixtures godot/generated")
+			CacheFixture.missing_hint())
 		return
 	var world: World = loaded["world"]
 	var document: Dictionary = loaded["document"]

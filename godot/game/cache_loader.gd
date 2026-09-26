@@ -8,28 +8,15 @@ extends RefCounted
 ## rather than skipped, so a broken cache is never papered over by another:
 ##
 ## 1. `--cache=DIR` -- development: force a directory, whatever else is there;
-## 2. `res://data/cache` -- the data a build carries in its own package. The
-##    converter writes `godot/data/cache` with a keep-importer sidecar beside
-##    each PNG/WAV/OGG and the presets take the JSON documents, so an export
-##    puts the directory into the PCK (or the APK, or the IPA) byte for byte;
+## 2. `res://data/cache` -- the data a build carries in its own package;
 ## 3. `user://caches/<id>` named by `user://caches/active.json` -- what the
-##    player converts themselves for a build made with `NO_CACHE=1`;
-## 4. `res://generated/cache` -- the development fixtures.
+##    player converts themselves for a build made with `NO_CACHE=1`.
 ##
-## The bundled data comes before the published cache so that a stale
-## `user://` cache from an earlier build cannot shadow the data a build ships.
-##
-## **Start-up checks shape, not bytes.**  [method quick_check] refuses a cache
-## whose schema or converter version is not this build's, and any inventory
-## entry that is missing or has the wrong length -- a truncated copy, a
-## deleted file, a package that imported a file instead of keeping it -- and
-## reads no data to do it.  The full sweep, [method verify], also recomputes
-## every SHA-256: 342 ms over a 100 MB campaign publish (`bench.gd`,
-## `verify_us`) and about two and a half times that for a 250 MB cache with a
-## language pack, paid on every start and every language switch, to catch the
-## one fault the quick check cannot -- bytes damaged at an unchanged size.  The
-## converter verifies every file when it writes the cache, so the full sweep
-## runs only on request (`--verify-cache`) and in the suites.
+## **Start-up checks shape, not bytes:** [method quick_check] reads the
+## versions and each entry's presence and length; the SHA-256 sweep,
+## [method verify], runs only on request (`--verify-cache`) and in the suites.
+## docs/92 section 3.2 has the order's reasons, how the data reaches the
+## package, and what each check costs.
 ##
 ## Refusal is by name, never by loading something almost right.
 
@@ -40,10 +27,8 @@ const CONVERTER_VERSION: String = "0.46.0"
 const CACHES_DIR: String = "user://caches"
 const ACTIVE_NAME: String = "active.json"
 const MANIFEST_NAME: String = "manifest.json"
-## The data a build carries in its own package (`make data`, docs/92 10.1).
+## The data a build carries in its own package (`make data`, docs/92 3.2).
 const BUNDLED_CACHE: String = "res://data/cache"
-## Where a development run finds the same bytes a build carries.
-const DEV_CACHE: String = "res://generated/cache"
 ## `--cache=DIR` opens that directory and nothing else.
 const CACHE_ARG: String = "--cache="
 ## `--verify-cache` makes the start-up check the full SHA-256 sweep.
@@ -52,7 +37,7 @@ const VERIFY_ARG: String = "--verify-cache"
 ## What the game prints when there is no cache.  A diagnosable first run
 ## (docs/92 section 9) means naming the command, not just the failure.
 const FIRST_RUN_HINT: String = \
-	"No converted data yet.  Run:\n" + \
+	"No converted data yet.  In a checkout run `make data`; otherwise:\n" + \
 	"    python3 tools/remake_convert.py <game-install> -o %s"
 
 
@@ -116,21 +101,27 @@ static func open_dir(cache_dir: String, full: bool = false) -> Dictionary:
 ## other parameters exist so the suites can walk the order over directories
 ## of their own.
 static func locate(args: PackedStringArray,
-		bundled: String = BUNDLED_CACHE, caches_dir: String = CACHES_DIR,
-		dev: String = DEV_CACHE) -> Dictionary:
+		bundled: String = BUNDLED_CACHE,
+		caches_dir: String = CACHES_DIR) -> Dictionary:
 	var full: bool = args.has(VERIFY_ARG)
-	for arg: String in args:
-		if arg.begins_with(CACHE_ARG):
-			return open_dir(arg.trim_prefix(CACHE_ARG), full)
+	var forced: String = forced_dir(args)
+	if not forced.is_empty():
+		return open_dir(forced, full)
 	if has_manifest(bundled):
 		return open_dir(bundled, full)
 	var active: String = active_cache_dir(caches_dir)
 	if not active.is_empty():
 		return open_dir(active, full)
-	if has_manifest(dev):
-		return open_dir(dev, full)
 	return {"ok": false, "reason": FIRST_RUN_HINT % caches_dir,
 		"cache_dir": "", "manifest": {}}
+
+
+## The directory `--cache=DIR` names, or `""` when no argument does.
+static func forced_dir(args: PackedStringArray) -> String:
+	for arg: String in args:
+		if arg.begins_with(CACHE_ARG):
+			return arg.trim_prefix(CACHE_ARG)
+	return ""
 
 
 ## **The manifest, not the directory**, says a cache is there: an interrupted
@@ -154,17 +145,18 @@ static func _problems(cache_dir: String, manifest: Dictionary, full: bool) \
 	for entry: Variant in inventory:
 		var record: Dictionary = DictRead.as_dict(entry)
 		var rel: String = DictRead.as_string(record["path"])
-		var file: FileAccess = FileAccess.open(cache_dir + "/" + rel,
-			FileAccess.READ)
-		if file == null:
+		var path: String = cache_dir + "/" + rel
+		if not FileAccess.file_exists(path):
 			problems.append("%s: missing" % rel)
 			continue
-		var length: int = file.get_length()
+		# The static size is a stat, not an open: 30 ms over the 3 742-file
+		# bundled cache where opening each file took 100 to 400.
+		var length: int = FileAccess.get_size(path)
 		if length != DictRead.as_int(record["size"]):
 			problems.append("%s: %d bytes, expected %d"
 				% [rel, length, DictRead.as_int(record["size"])])
 			continue
-		if full and sha256_hex(file.get_buffer(length)) \
+		if full and sha256_hex(FileAccess.get_file_as_bytes(path)) \
 				!= DictRead.as_string(record["sha256"]):
 			problems.append("%s: digest mismatch" % rel)
 	return problems

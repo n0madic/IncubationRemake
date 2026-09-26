@@ -743,7 +743,7 @@ func _check_door(h: TestHarness) -> void:
 	var loaded: Dictionary = CacheFixture.load_world(DOOR_MISSION)
 	if loaded.is_empty():
 		h.check("door.fixture", false,
-			"run tools/remake_convert.py --dev-fixtures godot/generated")
+			CacheFixture.missing_hint())
 		return
 	var world: World = loaded["world"]
 	var document: Dictionary = DictRead.as_dict(loaded["document"])
@@ -905,7 +905,7 @@ func _check_family(h: TestHarness) -> void:
 	var loaded: Dictionary = CacheFixture.load_world(DOOR_MISSION)
 	if loaded.is_empty():
 		h.check("family.fixture", false,
-			"run tools/remake_convert.py --dev-fixtures godot/generated")
+			CacheFixture.missing_hint())
 		return
 	var world: World = loaded["world"]
 	var document: Dictionary = DictRead.as_dict(loaded["document"])
@@ -1064,7 +1064,7 @@ func _check_family(h: TestHarness) -> void:
 	var wall_loaded: Dictionary = CacheFixture.load_world(WALL_MISSION)
 	if wall_loaded.is_empty():
 		h.check("family.wall.fixture", false,
-			"run tools/remake_convert.py --dev-fixtures godot/generated")
+			CacheFixture.missing_hint())
 		return
 	var wall_world: World = wall_loaded["world"]
 	var wall_document: Dictionary = DictRead.as_dict(wall_loaded["document"])
@@ -1183,7 +1183,7 @@ func _check_pose_record(h: TestHarness) -> void:
 	var loaded: Dictionary = CacheFixture.load_world(WALL_MISSION)
 	if loaded.is_empty():
 		h.check("poses.fixture", false,
-			"run tools/remake_convert.py --dev-fixtures godot/generated")
+			CacheFixture.missing_hint())
 		return
 	var world: World = loaded["world"]
 	var document: Dictionary = DictRead.as_dict(loaded["document"])
@@ -1248,7 +1248,7 @@ func _check_land_sync(h: TestHarness) -> void:
 	var loaded: Dictionary = CacheFixture.load_world(GROUND_MISSION)
 	if loaded.is_empty():
 		h.check("land_sync.fixture", false,
-			"run tools/remake_convert.py --dev-fixtures godot/generated")
+			CacheFixture.missing_hint())
 		return
 	var world: World = loaded["world"]
 	var document: Dictionary = DictRead.as_dict(loaded["document"])
@@ -1297,7 +1297,7 @@ func _check_ground_hole(h: TestHarness) -> void:
 	var loaded: Dictionary = CacheFixture.load_world(GROUND_MISSION)
 	if loaded.is_empty():
 		h.check("ground_hole.fixture", false,
-			"run tools/remake_convert.py --dev-fixtures godot/generated")
+			CacheFixture.missing_hint())
 		return
 	var world: World = loaded["world"]
 	var document: Dictionary = DictRead.as_dict(loaded["document"])
@@ -1402,7 +1402,7 @@ func _check_rider_fall_in_place(h: TestHarness) -> void:
 	var loaded: Dictionary = CacheFixture.load_world(WALL_MISSION)
 	if loaded.is_empty():
 		h.check("queued_rider.fixture", false,
-			"run tools/remake_convert.py --dev-fixtures godot/generated")
+			CacheFixture.missing_hint())
 		return
 	var world: World = loaded["world"]
 	var slots: PackedInt32Array = world.unit_slots()
@@ -1542,7 +1542,7 @@ func _check_clone_cells(h: TestHarness) -> void:
 	var loaded: Dictionary = CacheFixture.load_world(WALL_MISSION)
 	if loaded.is_empty():
 		h.check("clones.fixture", false,
-			"run tools/remake_convert.py --dev-fixtures godot/generated")
+			CacheFixture.missing_hint())
 		return
 	var world: World = loaded["world"]
 	var document: Dictionary = DictRead.as_dict(loaded["document"])
@@ -1648,7 +1648,7 @@ func _check_resume_after_load(h: TestHarness) -> void:
 	var loaded: Dictionary = CacheFixture.load_world(WALL_MISSION)
 	if loaded.is_empty():
 		h.check("resume.fixture", false,
-			"run tools/remake_convert.py --dev-fixtures godot/generated")
+			CacheFixture.missing_hint())
 		return
 	var world: World = loaded["world"]
 	var document: Dictionary = DictRead.as_dict(loaded["document"])
@@ -1829,7 +1829,7 @@ func _check_family_lever(h: TestHarness) -> void:
 	var loaded: Dictionary = CacheFixture.load_world(LEVER_MISSION)
 	if loaded.is_empty():
 		h.check("family.lever.fixture", false,
-			"run tools/remake_convert.py --dev-fixtures godot/generated")
+			CacheFixture.missing_hint())
 		return
 	var world: World = loaded["world"]
 	var document: Dictionary = DictRead.as_dict(loaded["document"])
@@ -5441,7 +5441,7 @@ func _check_platform_ride(h: TestHarness) -> void:
 	var loaded: Dictionary = CacheFixture.load_world(WALL_MISSION)
 	if loaded.is_empty():
 		h.check("platform.fixture", false,
-			"run tools/remake_convert.py --dev-fixtures godot/generated")
+			CacheFixture.missing_hint())
 		return
 	var world: World = loaded["world"]
 	var document: Dictionary = DictRead.as_dict(loaded["document"])
@@ -5639,7 +5639,7 @@ func _check_rebuild_drops_the_dead(h: TestHarness) -> void:
 	var loaded: Dictionary = CacheFixture.load_world(WALL_MISSION)
 	if loaded.is_empty():
 		h.check("move_script.rebuild_fixture", false,
-			"run tools/remake_convert.py --dev-fixtures godot/generated")
+			CacheFixture.missing_hint())
 		return
 	var world: World = loaded["world"]
 	var document: Dictionary = DictRead.as_dict(loaded["document"])

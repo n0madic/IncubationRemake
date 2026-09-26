@@ -45,8 +45,7 @@ func run(h: TestHarness) -> void:
 	_manifest = CacheLoader.read_json(_cache_dir + "/tables/sequences.json")
 	if _manifest.is_empty():
 		h.check("manifest", false,
-			"tables/sequences.json is missing -- run remake_convert.py "
-			+ "--dev-fixtures godot/generated")
+			"no tables/sequences.json: " + CacheFixture.missing_hint())
 		return
 	_manifest_shape(h)
 	_directories(h)

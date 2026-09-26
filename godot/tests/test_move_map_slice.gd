@@ -31,7 +31,7 @@ func _check_through_world(h: TestHarness) -> void:
 	var cache: Dictionary = CacheFixture.load_slice_world()
 	if cache.is_empty():
 		h.check("world.cache", false,
-			"run tools/remake_convert.py --dev-fixtures godot/generated")
+			CacheFixture.missing_hint())
 		return
 	var world: World = cache["world"]
 	var slots: PackedInt32Array = world.unit_slots()

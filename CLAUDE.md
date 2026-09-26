@@ -26,14 +26,14 @@ from the repo root.
 |---|---|
 | `make check-formats` | every format's corpus check — the test suite (read-only, ~40 tools) |
 | `make check-cache` | verify the published remake cache |
-| `make test-godot` | the Godot harness (`godot/run_tests.sh`; needs Godot 4.7 and fixtures) |
+| `make test-godot` | the Godot harness (`godot/run_tests.sh`; needs Godot 4.7, fixtures and `make data`, which it runs) |
 | `make test` | all three of the above |
 | `make extract` | every extractor at once into `tools/out/` (`tools/extract_assets.py`) |
 | `make fixtures` | rebuild the gitignored Godot test fixtures from the retail data |
 | `make test-touch` | the viewport-level touch integration run (headless) |
 | `make test-export` | the same suites inside the `macOS Tests` export, gated like the editor run (needs a window) |
 | `make build-macos\|windows\|linux\|android\|ios` | export a target; `make build` is the host |
-| `make data[-force]` | the game data every build carries in its package, in `godot/data/cache` (a build product, ~1 min / 220 MiB); `NO_CACHE=1 make build-*` leaves it out |
+| `make data[-force]` | the game data every build carries in its package, in `godot/data/cache` (a build product, [`docs/92` §3.2](docs/92-remake-architecture.md)); `NO_CACHE=1 make build-*` leaves it out |
 
 Overrides: `GAME_ROOT=`, `GODOT=`, `PYTHON=`, `EXPORT_MODE=debug|release`. Machine-local ones (e.g. `LANGUAGE_PACKS` for the Russian pack) live in gitignored `local.mk`.
 
@@ -82,20 +82,16 @@ chunk walker).
 
 ```bash
 make data                                   # godot/data/cache, carried by every build
-python3 tools/remake_convert.py gog_incubation --dev-fixtures godot/generated
+python3 tools/remake_convert.py gog_incubation --dev-fixtures godot/generated  # inspect/ only
 python3 tools/remake_convert.py gog_incubation --campaign-maps \
     --instant-action-maps -o "<user caches dir>"   # for a NO_CACHE=1 build
 ```
 
-A build carries `godot/data/cache` in its own PCK/APK/IPA: `--dev-fixtures` writes
-a keep-importer `.import` sidecar beside each PNG/WAV/OGG and the presets'
-`include_filter` takes the JSON, so the export ships the files raw. The game
-picks its cache with `CacheLoader.locate` — `--cache=DIR`, then
-`res://data/cache`, then `user://caches`, then `res://generated/cache` — and
-checks only versions, presence and sizes at start; `--verify-cache` runs the
-full SHA-256 sweep ([`docs/92` §3.2](docs/92-remake-architecture.md)). A build
-with the data is for the owner of the game only; a publishable one is
-`NO_CACHE=1 make build-*`.
+A build carries `godot/data/cache` (`remake_convert.py --bundle`) raw in its own
+PCK/APK/IPA; how it gets there, the order `CacheLoader.locate` takes the
+sources in, and what the start-up check costs are all
+[`docs/92` §3.2](docs/92-remake-architecture.md). A build with the data is for
+the owner of the game only; a publishable one is `NO_CACHE=1 make build-*`.
 
 `--campaign-maps` and `--instant-action-maps` **belong together**: the first
 replaces `--missions` with all 92 campaign maps (a mission the cache lacks stops

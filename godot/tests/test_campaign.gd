@@ -1052,7 +1052,8 @@ func _decorations_survive(h: TestHarness, cases: Dictionary) -> void:
 	# And the same record on a map: the clone, the delta mirror and the save.
 	var document: Dictionary = CacheFixture.mission("_C_140")
 	if document.is_empty():
-		h.check("decor.mission", false, "_C_140 is not in the cache")
+		h.check("decor.mission", false,
+			"no _C_140: " + CacheFixture.missing_hint())
 		return
 	var world: World = World.create(document, CacheFixture.balance(), 0.0)
 	var live: Dictionary = world.units_for_ai()
@@ -1134,7 +1135,7 @@ func _mission_opening(h: TestHarness) -> void:
 	var document: Dictionary = CacheFixture.mission(OPENING_MISSION)
 	if document.is_empty() or balance.is_empty():
 		h.check("opening.present", false,
-			"%s is not in the cache" % OPENING_MISSION)
+			"no %s: %s" % [OPENING_MISSION, CacheFixture.missing_hint()])
 		return
 
 	# **The loader leaves turn 0**, which is the deployment phase and not a

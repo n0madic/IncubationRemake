@@ -216,19 +216,21 @@ byte-identical output. Polygons stay polygons: triangulation is a rendering
 decision and lives in `game/`, or the cache would stop being decoded,
 engine-independent data.
 
-The production cache and the development `res://generated/` fixtures are the
-**same byte stream** from the same function, differing only in output root, so
-§10.1 item 4's "diff the portable logical data, not the incidental Godot
-resource serialization" is satisfied by there being no incidental serialisation
-at all. Every production cache has a
+The published cache and the bundled `godot/data/cache` are the **same byte
+stream** from the same function, differing only in output root, so §10.1 item
+4's "diff the portable logical data, not the incidental Godot resource
+serialization" is satisfied by there being no incidental serialisation at all. Every production cache has a
 manifest carrying at least the source edition/language fingerprint, converter
 version and cache-schema version, so incompatible or partial output is rejected
 instead of being loaded optimistically.
 
 **A build carries its data in its own package** (2026-09-26). `make data`
-converts all campaign and Instant Action maps into gitignored
-`godot/data/cache` -- the manifest plus the inventory, the same directory
-layout on every platform -- and writes beside each PNG/WAV/OGG a `.import`
+(`remake_convert.py --bundle godot/data`) converts all campaign and Instant
+Action maps into gitignored `godot/data/cache` -- the manifest plus the
+inventory, the same directory layout on every platform, and nothing beside it.
+With the
+Russian pack laid over it that is 3 742 files and 253 MiB, converted in about
+40 s. Beside each PNG/WAV/OGG it writes a `.import`
 sidecar naming Godot's *Keep File (exported as is)* importer
 (`[remap] importer="keep"`). A kept file is not imported, so the export ships
 it byte for byte; the JSON documents enter through every game preset's
@@ -240,30 +242,49 @@ the cache's: they are outside the inventory, so the manifest and every digest
 are unchanged. Such a build contains Blue Byte data and is for its owner only;
 `NO_CACHE=1 make build-*` hides `godot/data` behind a `.gdignore` for the length
 of the export and produces a build without it, which reads a cache the player
-publishes under `user://caches` with `remake_convert.py -o`. The inspection
-tree `godot/data/inspect` is excluded from every preset.
+publishes under `user://caches` with `remake_convert.py -o`. Every
+`build-*` re-imports and then runs `verify_embedded_cache.py --kept` before
+exporting: a media file whose sidecar names another importer, or that has none,
+would reach the package as an imported resource where the manifest pins raw
+bytes, and that fault is the same on every platform, so it is refused before
+any of them exports.
 
 `CacheLoader.locate` takes the first source that exists, in this order:
 `--cache=DIR`; the bundled `res://data/cache`; the published
-`user://caches/<id>` named by `active.json`; the development fixtures
-`res://generated/cache`. A source that exists but does not check out is refused
+`user://caches/<id>` named by `active.json`. A source that exists but does not
+check out is refused
 by name, never skipped for the next one, and the bundled data comes before the
 player's cache so that a stale `user://` cache cannot shadow what a build
 ships. **Start-up checks shape, not bytes:** the schema and converter versions
-and each inventory entry's presence and length, read without opening the data
--- 64 ms over the 3 340-file bundled cache in the exported macOS build, where
+and each inventory entry's presence and length, read with a `stat` per file
+and without opening one (`FileAccess.get_size`: 30 ms over the 3 742 files on
+disk, where opening each took 100 to 400 ms) -- 64 ms over the 3 340-file
+bundled cache in the exported macOS build, where
 the full SHA-256 sweep takes 595 ms and was paid on every start and every
 language switch. The converter verifies every byte when it writes a cache; the
 full sweep now runs on request (`--verify-cache`) and in `test_cache.gd`, and
 the one fault the quick check cannot see -- bytes damaged at an unchanged size
 -- is left to it.
 
-During development the same conversion writes the gitignored
-`res://generated/` fixture set with the same keep sidecars, so the editor no
-longer imports its 2 249 media files and the `macOS Tests` export carries the
-fixture cache raw. Those fixtures remain uncommitted.
-Production and development outputs must describe the same decoded data even when
-their containers differ.
+**The suites read the bundled data and nothing else** (`tests/cache_fixture.gd`):
+`res://data/cache` in the editor run and, from its own PCK, inside the
+`macOS Tests` export, whose preset carries `data/cache/*` for that -- or the
+directory `--cache=DIR` names. They do not fall through to the player's
+`user://caches`: it differs from machine to machine, and a suite that fell
+through read a different cache on every machine without saying which. A refused cache is the named
+failure `cache.fixture.bundled`, and `make test-godot` and `make test-export`
+run `make data` first.
+
+**There is no development cache** (2026-09-26). A six-mission
+`res://generated/cache` used to be `locate`'s last fallback and the suites'
+cache where no player cache was published; it lacked the campaign missions,
+upgrade scenes and models four suites need, and once the suites read the
+bundled data nothing else read it. The editor run reads `godot/data/cache` like
+a build. `--dev-fixtures godot/generated` (`make fixtures`) now writes only the
+by-eye `inspect/` tree -- `lev_parse --png` per mission, `prototyp_parse --obj`
+per prototype, read by no code -- converted from a staging directory it then
+discards, and each of the two modes removes a tree of the other kind an earlier
+run left in its root.
 
 ---
 
@@ -353,9 +374,9 @@ reason they are frozen rather than retired:
 
 * **The corpus.** `movemap_runtime` runs 3726 fills, 4587 paths and 4587 walks;
   `ai_runtime` 108 missions; `turn_runtime` 1863 units; `lcl_runtime` 942
-  invocations. The Godot suites run against **six** converted missions, because
-  `--dev-fixtures` is six. These are different orders of coverage, not the same
-  check twice.
+  invocations. The Godot suites read the bundled data but each exercises the
+  handful of missions it names. These are different orders of coverage, not
+  the same check twice.
 * **An oracle that needs no Wine.** Every fixture is gitignored
   (`.gitignore`: `tests/fixtures/*/*.json`; only the `README.md` beside each is
   in git). A Python-emitted fixture regenerates from the corpus alone; a native
@@ -2644,15 +2665,15 @@ start until a real Apple Team ID is configured locally and full Xcode is
 installed; neither a fabricated signing identity nor a provisioning profile is
 kept in this repository. Every build goes to ignored `godot/export/`.
 Every `build-*` first brings all campaign and Instant Action data in ignored
-`godot/data/cache` up to date (`make data`, §3.2) and re-imports before exporting.
-`make build-android` then requires every cache manifest entry's size and
-SHA-256 to agree with the individual file embedded in the resulting APK, the
-embedded manifest to be the one the build was made from, and no import remap
-under the cache; with `NO_CACHE=1` it requires the opposite, an APK with no
-cache at all. The data is a build **product**, not a step: it is converted
-again only when the converter's own sources change, when the `Makefile`
-changes, or when the arguments it was built with differ from the ones recorded
-beside it -- a minute and 220 MiB that used to be paid on every export. `make
+`godot/data/cache` up to date (`make data`), re-imports and requires the data to
+be kept before exporting (§3.2). `make build-android` then requires every cache
+manifest entry's size and SHA-256 to agree with the individual file embedded in
+the resulting APK and the embedded manifest to be the one the build was made
+from; with `NO_CACHE=1` it requires the opposite, an APK with no cache at all.
+The data is a build **product**, not a step: it is converted again only when the
+converter's own sources change, when the `Makefile` changes, or when the
+arguments it was built with differ from the ones recorded beside it -- a
+conversion that used to be paid on every export (§3.2 has its size). `make
 data-force` rebuilds it regardless. The stamp is a file of its own rather than
 the cache's manifest, because the converter refuses to replace a `cache/`
 directory that does not look like one of its own, so deleting the manifest to

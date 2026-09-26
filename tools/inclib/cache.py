@@ -486,11 +486,14 @@ def load_manifest(cache_dir: Path) -> dict[str, Any]:
 
 
 def verify_cache(cache_dir: Path) -> list[str]:
-    """The check the game makes on every load.  Returns the reasons to refuse.
+    """The full sweep: every declared file present, sized and hashed.
 
-    A full pass over roughly two megabytes costs a few milliseconds, so it runs
-    every time.  Verifying only on the first load would make "a partial cache
-    is never accepted" a claim about the happy path.
+    Returns the reasons to refuse.  It is ``CacheLoader.verify``'s rule, run
+    by :func:`publish` before it reuses a cache already at the target id and by
+    the converter's checks.  The game itself only runs the quick check --
+    versions, presence, length -- at start and this sweep on request
+    (``--verify-cache``): over a published campaign it is hundreds of
+    milliseconds (``docs/92`` §3.2 has the measurements).
     """
     problems: list[str] = []
     try:
@@ -518,6 +521,56 @@ def verify_cache(cache_dir: Path) -> list[str]:
             problems.append(f"{entry['path']}: digest mismatch")
     if not manifest.get("inventory"):
         problems.append("the manifest declares no files")
+    return problems
+
+
+#: The cache's media the Godot editor has an importer for.  Imported, they
+#: would ship as `.ctex` textures and audio samples instead of the bytes the
+#: manifest pins, and every reader loads them from their raw bytes.
+KEEP_SUFFIXES = (".png", ".wav", ".ogg")
+#: The `.import` sidecar of the editor's *Keep File (exported as is)* importer:
+#: the file is not imported and an export carries it byte for byte
+#: (``docs/92`` §3.2).
+KEEP_IMPORT = '[remap]\n\nimporter="keep"\n'
+_IMPORTER = re.compile(r'^importer="([^"]*)"', re.MULTILINE)
+
+
+def write_keep_sidecars(root: Path, inventory: list[dict[str, Any]]) -> int:
+    """Give every media file of ``inventory`` under ``root`` a keep sidecar.
+
+    The sidecars are Godot's, not the cache's: they are not in the inventory,
+    so the manifest -- and every digest built on it -- is unchanged.
+    """
+    written = 0
+    for record in inventory:
+        rel = str(record["path"])
+        if rel.lower().endswith(KEEP_SUFFIXES):
+            (root / f"{rel}.import").write_text(KEEP_IMPORT, encoding="ascii")
+            written += 1
+    return written
+
+
+def unkept_files(cache_dir: Path) -> list[str]:
+    """Every file of the cache an export would not carry byte for byte.
+
+    Run after the editor's ``--import``: by then every file Godot has an
+    importer for has a sidecar, so a sidecar naming another importer is a file
+    that was imported, and a media file with no sidecar is one the editor never
+    saw.  Both are relative paths; empty means the export ships the cache raw.
+    """
+    manifest = load_manifest(cache_dir)
+    declared = {str(record["path"]) for record in manifest.get("inventory", [])}
+    problems: list[str] = []
+    for sidecar in sorted(cache_dir.rglob("*.import")):
+        rel = sidecar.relative_to(cache_dir).as_posix()[:-len(".import")]
+        found = _IMPORTER.search(sidecar.read_text(encoding="utf-8"))
+        importer = found.group(1) if found else "?"
+        if importer != "keep":
+            problems.append(f"{rel}: importer {importer}")
+    for rel in sorted(declared):
+        if rel.lower().endswith(KEEP_SUFFIXES) \
+                and not (cache_dir / f"{rel}.import").is_file():
+            problems.append(f"{rel}: no sidecar")
     return problems
 
 

@@ -1,15 +1,15 @@
 class_name CacheFixture
 extends RefCounted
 
-## Finds the cache the suites read, the way the game finds its own.
+## The cache the suites read: the data a build carries.
 ##
-## A build reads its data from `res://data/cache` (or a player's
-## `user://caches/<id>/`); the development tree `res://generated/cache/` exists
-## so the map, the meshes and the tables can be looked at in the editor and in
-## external tools.  docs/92 section 10.1 item 4 asks
-## that the *portable logical data* be diffed rather than an incidental Godot
-## serialisation -- and there is none to diff around, because the two trees come
-## out of the same function.
+## Both runs read `res://data/cache` (`make data`) -- the editor's straight
+## from `godot/data`, the `macOS Tests` export's from its own PCK -- or the
+## directory `--cache=DIR` names.  **No other source**: the game's
+## [method CacheLoader.locate] falls through to the player's `user://caches`,
+## and a suite that did the same read a different cache on every machine
+## without saying which.  A refused
+## cache is a named failure ([method refusal]), never a fallback.
 
 const SLICE_MISSION: String = "_C_115"
 
@@ -32,24 +32,51 @@ const SLICE_MISSION: String = "_C_115"
 ## exit`) and `run_tests.sh` cannot see it.  A [String] on the [Engine]
 ## singleton's metadata holds no script reference and so cannot leak one.
 const CACHE_DIR_META: StringName = &"incubation_test_cache_dir"
+## Why [method cache_dir] did not check out, kept beside it; empty when it did.
+const CACHE_REFUSAL_META: StringName = &"incubation_test_cache_refusal"
 
 
-## The cache these fixtures read, in the game's own order
-## ([method CacheLoader.locate]; `--cache=DIR` on the test run forces one).
+## The cache these fixtures read: `--cache=DIR` on the test run, or the
+## bundled data.
 ##
 ## Found on the first call and remembered after it; see
 ## [constant CACHE_DIR_META].  `test_cache.gd` calls [method CacheLoader.verify]
 ## directly and is unaffected -- the refusal cases it covers are still measured
 ## against the real manifest.
 static func cache_dir() -> String:
-	if Engine.has_meta(CACHE_DIR_META):
-		return DictRead.as_string(Engine.get_meta(CACHE_DIR_META))
-	var opened: Dictionary = CacheLoader.locate(OS.get_cmdline_user_args())
-	var dir: String = CacheLoader.DEV_CACHE
-	if DictRead.as_bool(opened["ok"]):
-		dir = DictRead.as_string(opened["cache_dir"])
+	if not Engine.has_meta(CACHE_DIR_META):
+		_open()
+	return DictRead.as_string(Engine.get_meta(CACHE_DIR_META))
+
+
+## Why the cache the suites read was refused, with the command that makes
+## one; empty when it checked out.
+static func refusal() -> String:
+	var _dir: String = cache_dir()
+	return DictRead.as_string(Engine.get_meta(CACHE_REFUSAL_META))
+
+
+## What a suite reports when a document it needs is not there: the refusal
+## when the whole cache was refused, else that this cache lacks it.
+static func missing_hint() -> String:
+	var refused: String = refusal()
+	if not refused.is_empty():
+		return refused
+	return "the cache at %s lacks it; run `make data`" % cache_dir()
+
+
+static func _open() -> void:
+	var dir: String = CacheLoader.forced_dir(OS.get_cmdline_user_args())
+	if dir.is_empty():
+		dir = CacheLoader.BUNDLED_CACHE
+	var opened: Dictionary = CacheLoader.open_dir(dir)
+	var refused: String = ""
+	if not DictRead.as_bool(opened["ok"]):
+		refused = "%s; run `make data`" % DictRead.as_string(opened["reason"])
+	print("suites read the cache at %s%s"
+		% [dir, "" if refused.is_empty() else " -- REFUSED"])
 	Engine.set_meta(CACHE_DIR_META, dir)
-	return dir
+	Engine.set_meta(CACHE_REFUSAL_META, refused)
 
 
 static func read_json(path: String) -> Dictionary:

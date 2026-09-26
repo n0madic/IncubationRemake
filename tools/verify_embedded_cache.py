@@ -1,15 +1,12 @@
 #!/usr/bin/env python3
-"""Require an Android APK to contain every byte its embedded cache declares.
+"""Require a build's embedded cache to be the bytes its manifest declares.
 
-The cache reaches the package the way every other project file does: the
-converter writes ``godot/data/cache`` with a keep-importer sidecar beside each
-media file, and the presets' ``include_filter`` carries the JSON documents, so
-the export copies the whole directory into the package unimported
-(``docs/92`` section 10.1).  This checks the result byte for byte.
-
-``--expect-manifest`` also requires the embedded manifest to be the one the
-build was made from; ``--absent`` checks the opposite, that a build made with
-``NO_CACHE=1`` carries no cache at all.
+``--kept DIR`` runs before any export, for every platform: after the editor's
+``--import`` every media file of the cache must still carry the keep sidecar
+the converter wrote, so the export ships it raw (``docs/92`` §3.2).  Given an
+APK, it checks the result byte for byte; ``--expect-manifest`` also requires
+the embedded manifest to be the one the build was made from, and ``--absent``
+the opposite, that a build made with ``NO_CACHE=1`` carries no cache at all.
 """
 
 from __future__ import annotations
@@ -21,6 +18,10 @@ from pathlib import Path
 import sys
 import zipfile
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from inclib import cache as cachemod  # noqa: E402
+
 
 # APKs store application assets directly under ``assets/``. An Android App
 # Bundle wraps that same tree in its ``base`` module. These are the only two
@@ -30,40 +31,17 @@ CACHE_PREFIXES = (
     "assets/data/cache/",
     "base/assets/data/cache/",
 )
-# Nothing of these may be in a package: the eye fixtures are for a person, and
-# `android_payload/` is where the cache lived before it moved into
-# `godot/data/`, so a hit there is a stale tree the export picked up.
-FORBIDDEN_PREFIXES = tuple(f"{root}assets/{sub}"
-                           for root in ("", "base/")
-                           for sub in ("data/inspect/", "android_payload/"))
-# An import remap under the cache means the editor imported a file instead of
-# keeping it, and the package carries a converted resource where the manifest
-# pins raw bytes.
-IMPORTED_SUFFIXES = (".import", ".remap")
-
-
-def _names(apk: zipfile.ZipFile) -> list[str]:
-    """The archive's entry names, refused if any is under a forbidden prefix."""
-    names = apk.namelist()
-    for name in names:
-        if name.startswith(FORBIDDEN_PREFIXES):
-            raise ValueError(f"package unexpectedly includes {name}")
-    return names
 
 
 def verify(apk_path: Path, expect_manifest: Path | None = None) -> tuple[int, int]:
     if not apk_path.is_file():
         raise ValueError(f"APK does not exist: {apk_path}")
     with zipfile.ZipFile(apk_path) as apk:
-        names = _names(apk)
+        names = apk.namelist()
         prefix = next((candidate for candidate in CACHE_PREFIXES
                        if candidate + "manifest.json" in names), None)
         if prefix is None:
             raise ValueError(f"{apk_path} has no embedded cache manifest")
-        imported = next((name for name in names if name.startswith(prefix)
-                         and name.endswith(IMPORTED_SUFFIXES)), None)
-        if imported is not None:
-            raise ValueError(f"embedded cache was imported, not kept: {imported}")
         raw_manifest = apk.read(prefix + "manifest.json")
         if expect_manifest is not None \
                 and raw_manifest != expect_manifest.read_bytes():
@@ -104,8 +82,7 @@ def verify_absent(apk_path: Path) -> None:
     if not apk_path.is_file():
         raise ValueError(f"APK does not exist: {apk_path}")
     with zipfile.ZipFile(apk_path) as apk:
-        names = _names(apk)
-        carried = next((name for name in names
+        carried = next((name for name in apk.namelist()
                         if name.startswith(CACHE_PREFIXES)), None)
         if carried is not None:
             raise ValueError(f"a NO_CACHE package carries cache data: {carried}")
@@ -113,19 +90,32 @@ def verify_absent(apk_path: Path) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("apk", type=Path)
+    parser.add_argument("apk", type=Path, nargs="?")
+    parser.add_argument("--kept", type=Path, metavar="DIR",
+                        help="instead of an APK: require the cache in DIR to "
+                             "be kept, not imported, after --import")
     parser.add_argument("--expect-manifest", type=Path, metavar="MANIFEST",
                         help="require the embedded manifest to equal this file")
     parser.add_argument("--absent", action="store_true",
                         help="require the package to carry no cache at all")
     args = parser.parse_args()
+    if (args.apk is None) == (args.kept is None):
+        parser.error("give an APK or --kept DIR")
     try:
+        if args.kept is not None:
+            unkept = cachemod.unkept_files(args.kept)
+            if unkept:
+                raise ValueError(f"{args.kept}: {len(unkept)} file(s) would be "
+                                 f"exported imported, not raw: "
+                                 + ", ".join(unkept[:10]))
+            print(f"{args.kept}: every media file is kept")
+            return 0
         if args.absent:
             verify_absent(args.apk)
             print("embedded cache: none, as required")
             return 0
         count, size = verify(args.apk, args.expect_manifest)
-    except (OSError, ValueError, zipfile.BadZipFile) as exc:
+    except (OSError, ValueError, zipfile.BadZipFile, cachemod.CacheError) as exc:
         print(f"verify_embedded_cache.py: {exc}", file=sys.stderr)
         return 1
     print(f"embedded cache: {count} files, {size / 1024 / 1024:.1f} MiB, verified")

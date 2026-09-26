@@ -18,7 +18,8 @@
 # fixture was silently validated against stale data instead of reporting the
 # gap -- which is the opposite of what the paragraph above promises.
 #
-# The `macOS Tests` preset's include filter is `tests/*, generated/*`, so an
+# The `macOS Tests` preset's include filter is `tests/*, generated/*` (and the
+# bundled data, `data/cache/*`, which the suites read), so an
 # export takes whatever this staged: it has to run *before* the export, or the
 # build carries the previous run's fixtures.
 stage_fixtures() {

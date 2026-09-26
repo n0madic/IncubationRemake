@@ -55,7 +55,8 @@ empty corpus, so a wrong path cannot pass.
    make data
    ```
 
-   This writes `godot/data/cache` (about 220 MB, gitignored). The editor run and
+   This writes `godot/data/cache` (gitignored; size and cost in
+   [`docs/92` §3.2](docs/92-remake-architecture.md)). The editor run and
    every build read it from there. Started without data, the game says what to
    run instead of failing silently.
 

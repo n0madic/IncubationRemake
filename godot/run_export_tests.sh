@@ -4,8 +4,10 @@
 #     bash godot/run_export_tests.sh [godot-binary]
 #
 # `run_tests.sh` runs the suites in the editor's headless engine.  The `macOS
-# Tests` preset runs the same suites inside a real `.app` against the published
-# cache (docs/92 section 10.4: "demonstrated in an exported build"), and it
+# Tests` preset runs the same suites inside a real `.app` against the data the
+# app carries in its own PCK, `res://data/cache` -- the cache the editor run
+# reads too (`make data`; docs/92 section 10.4: "demonstrated in an exported
+# build") -- and it
 # prints the same tail -- but until this script it was started by hand and
 # read by eye, so a leak none of the eight campaign screens makes would have
 # passed unread (docs/101 section 13.9).  This stages the fixtures, exports

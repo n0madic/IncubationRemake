@@ -11,6 +11,8 @@ Usage::
     python3 tools/remake_convert.py gog_incubation --check
     python3 tools/remake_convert.py --check-cache
     python3 tools/remake_convert.py gog_incubation --dev-fixtures godot/generated
+    python3 tools/remake_convert.py gog_incubation --campaign-maps \
+        --instant-action-maps --bundle godot/data
     python3 tools/remake_convert.py gog_incubation --instant-action-maps -o CACHES
     python3 tools/remake_convert.py gog_incubation --campaign-maps \
         --language-pack Russian=/path/to/1C -o CACHES
@@ -335,26 +337,27 @@ def convert_and_publish(root: Path, missions: list[str], out: Path,
     return 0
 
 
-def dev_fixtures(root: Path, missions: list[str], out: Path,
-                 language: str, music: bool = True,
-                 packs: Packs | None = None,
-                 plates: Plates | None = None) -> int:
-    """Materialise the same bytes into a gitignored ``res://generated/`` tree.
+def materialise(root: Path, missions: list[str], out: Path,
+                language: str, music: bool = True,
+                packs: Packs | None = None,
+                plates: Plates | None = None, *, bundle: bool) -> int:
+    """Write one of the two directory trees under ``out``.
 
-    ``docs/92`` §10.1 item 4 wants the development fixtures to describe the same
-    decoded data as production and the diff to be of the portable logical data
-    rather than of an incidental Godot serialisation.  Emitting the identical
-    byte stream through the identical function makes that trivially true --
-    there is no incidental serialisation to diff around.
+    With ``bundle`` (``--bundle godot/data``) that is ``cache/``: the data a
+    build carries in its own package, with the keep sidecars that ship it raw
+    (``docs/92`` §3.2).  Without (``--dev-fixtures godot/generated``) it is
+    ``inspect/``: the by-eye material, converted from the same staging and
+    read by no code.  Either removes a tree of the other kind an earlier run
+    left under ``out``, so a root holds exactly what its mode writes.
     """
     refuse_game_output(root, out)
     for pack_root in (packs or {}).values():
         refuse_game_output(pack_root, out)
     # **Before** the conversion, not after it.  Both directories this replaces
-    # are checked up front, so a mistyped `--dev-fixtures` costs a message
-    # rather than several seconds of work followed by a message -- and, more
-    # to the point, the `inspect/` refusal cannot fire after `cache/` has
-    # already been replaced.
+    # are checked up front, so a mistyped output root costs a message rather
+    # than several seconds of work followed by a message -- and, more to the
+    # point, the `inspect/` refusal cannot fire after `cache/` has already been
+    # replaced.
     _refuse_unowned(out / "cache", cachemod.is_cache_dir,
                     "it is not one of this converter's caches")
     _refuse_unowned(out / EYE_DIR, _is_eye_dir,
@@ -366,46 +369,28 @@ def dev_fixtures(root: Path, missions: list[str], out: Path,
     # The same rule `collect` follows, and for the same reason: this removes a
     # whole directory tree by a fixed name under a path the caller chose, so it
     # must first establish that the tree is one of ours.  `refuse_unsafe_output`
-    # cannot help here -- the documented destination is `godot/generated`,
-    # inside this repository, which that function exists to refuse.
+    # cannot help here -- both documented destinations are inside this
+    # repository, which that function exists to refuse.
     _remove_if_ours(target, cachemod.is_cache_dir,
                     "it is not one of this converter's caches")
+    if not bundle:
+        try:
+            written = write_eye_fixtures(root, missions, out, manifest,
+                                         staging.root)
+        finally:
+            staging.discard()
+        LOG.info("wrote %s (%d files for the eye, read by no code)",
+                 out / EYE_DIR, written)
+        return 0
+    _remove_if_ours(out / EYE_DIR, _is_eye_dir,
+                    f"it carries no {EYE_MARKER} marker")
     (staging.root / cachemod.MANIFEST_NAME).write_bytes(
         cachemod.dumps(manifest).encode("utf-8"))
-    sidecars = write_keep_sidecars(staging.root, manifest["inventory"])
+    sidecars = cachemod.write_keep_sidecars(staging.root, manifest["inventory"])
     staging.root.rename(target)
     LOG.info("wrote %s (%d files, %d keep sidecars)", target,
              len(manifest["inventory"]), sidecars)
-    written = write_eye_fixtures(root, missions, out, manifest)
-    LOG.info("wrote %s (%d files for the eye, read by no code)",
-             out / EYE_DIR, written)
     return 0
-
-
-#: The cache's media the Godot editor has an importer for.  Imported, they
-#: would ship as `.ctex` textures and audio samples instead of the bytes the
-#: manifest pins, and every reader loads them from their raw bytes.
-KEEP_SUFFIXES = (".png", ".wav", ".ogg")
-#: The `.import` sidecar of the editor's *Keep File (exported as is)* importer:
-#: the file is not imported and an export carries it byte for byte.  Together
-#: with the presets' `include_filter` for the JSON documents, this is what
-#: puts a directory cache into the game's own PCK (docs/92 section 10.1).
-KEEP_IMPORT = '[remap]\n\nimporter="keep"\n'
-
-
-def write_keep_sidecars(root: Path, inventory: list[dict[str, Any]]) -> int:
-    """Give every media file of ``inventory`` under ``root`` a keep sidecar.
-
-    The sidecars are Godot's, not the cache's: they are not in the inventory,
-    so the manifest -- and every digest built on it -- is unchanged.
-    """
-    written = 0
-    for record in inventory:
-        rel = str(record["path"])
-        if rel.lower().endswith(KEEP_SUFFIXES):
-            (root / f"{rel}.import").write_text(KEEP_IMPORT, encoding="ascii")
-            written += 1
-    return written
 
 
 #: Marks a directory as one this tool wrote and may therefore delete.  The
@@ -439,7 +424,7 @@ def _refuse_unowned(target: Path, owned: Any, why: str) -> None:
     if owned(target) or not any(target.iterdir()):
         return
     raise cachemod.CacheError(
-        f"refusing to delete {target}: {why}. Point --dev-fixtures somewhere "
+        f"refusing to delete {target}: {why}. Point the output somewhere "
         f"else, or remove it yourself if it really is disposable.")
 
 
@@ -459,7 +444,7 @@ EYE_DIR = "inspect"
 
 
 def write_eye_fixtures(root: Path, missions: list[str], out: Path,
-                       manifest: dict[str, Any]) -> int:
+                       manifest: dict[str, Any], converted: Path) -> int:
     """`lev_parse --png` per mission and `prototyp_parse --obj` per prototype.
 
     Deliberately *not* part of the cache: they are derived from the same data
@@ -485,7 +470,7 @@ def write_eye_fixtures(root: Path, missions: list[str], out: Path,
 
     for world_set in manifest.get("world_sets", []):
         document = json.loads(
-            (out / "cache" / "geometry" / f"{world_set}.json").read_text())
+            (converted / "geometry" / f"{world_set}.json").read_text())
         source = document["source"]
         # The manifest records source paths relative to the game root.
         container = protomod.load_container(str(root / source["din"]),
@@ -2226,7 +2211,7 @@ def run_cache_checks() -> int:
         sentinel = game / "cache" / "user-save.bin"
         sentinel.write_bytes(b"keep")
         try:
-            dev_fixtures(game, [], game, "English")
+            materialise(game, [], game, "English", bundle=False)
             dev_refused = False
         except cachemod.CacheError:
             dev_refused = True
@@ -2247,7 +2232,8 @@ def run_cache_checks() -> int:
             theirs = elsewhere / name / "not-ours.txt"
             theirs.write_bytes(b"somebody's data")
             try:
-                dev_fixtures(Path("gog_incubation"), [], elsewhere, "English")
+                materialise(Path("gog_incubation"), [], elsewhere, "English",
+                            bundle=False)
                 refused = False
             except cachemod.CacheError:
                 refused = True
@@ -2279,20 +2265,36 @@ def run_cache_checks() -> int:
                     "tables/trig.json"):
             media.write_bytes(rel, b"x")
         keep_inventory = cachemod.build_inventory(media)
-        written = write_keep_sidecars(media.root, keep_inventory)
+        written = cachemod.write_keep_sidecars(media.root, keep_inventory)
         sidecars = sorted(p.relative_to(media.root).as_posix()
                           for p in media.root.rglob("*.import"))
-        c.expect("cache.dev_fixtures_writes_keep_sidecars", sidecars,
+        c.expect("cache.bundle_writes_keep_sidecars", sidecars,
                  ["art/plate.png.import", "audio/music/1.ogg.import",
                   "audio/waves/a.WAV.import"],
                  f"{written} sidecar(s), one per media file")
         c.check("cache.keep_sidecar_body",
-                all((media.root / s).read_text(encoding="ascii") == KEEP_IMPORT
+                all((media.root / s).read_text(encoding="ascii") == cachemod.KEEP_IMPORT
                     for s in sidecars),
                 'every sidecar is [remap] importer="keep"')
         c.expect("cache.keep_sidecars_outside_inventory",
                  cachemod.build_inventory(media), keep_inventory,
                  "the inventory is unchanged by the sidecars")
+        # What `make build-*` asks after `--import`: a kept cache passes, and
+        # a file the editor imported, or a media file it never saw, is named.
+        (media.root / cachemod.MANIFEST_NAME).write_text(
+            cachemod.dumps({"inventory": keep_inventory}), encoding="utf-8")
+        c.expect("cache.unkept_none_when_kept",
+                 cachemod.unkept_files(media.root), [],
+                 "the sidecars the converter wrote")
+        (media.root / "art/plate.png.import").write_text(
+            '[remap]\n\nimporter="texture"\ntype="CompressedTexture2D"\n',
+            encoding="ascii")
+        (media.root / "audio/music/1.ogg.import").unlink()
+        c.expect("cache.unkept_names_imported_and_unseen",
+                 cachemod.unkept_files(media.root),
+                 ["art/plate.png: importer texture",
+                  "audio/music/1.ogg: no sidecar"],
+                 "one imported, one never scanned")
         media.discard()
 
         # An unknown schema version is refused by name.
@@ -2332,7 +2334,9 @@ def main(argv: list[str] | None = None) -> int:
                     help="a pack's title picture where its tree lacks one: "
                          "PLATE is title or wilderness_title")
     ap.add_argument("--dev-fixtures", type=Path,
-                    help="also materialise res://generated/ fixtures here")
+                    help="write the by-eye inspect/ tree here (godot/generated)")
+    ap.add_argument("--bundle", type=Path,
+                    help="write the cache/ a build carries here (godot/data)")
     ap.add_argument("--check", action="store_true",
                     help="two conversions, the as_dict oracle, PNG stability")
     ap.add_argument("--check-cache", action="store_true",
@@ -2347,6 +2351,8 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(levelname)s: %(message)s")
+    if args.dev_fixtures and args.bundle:
+        ap.error("--bundle and --dev-fixtures write different trees; give one")
     if args.campaign_maps and args.missions is not None:
         ap.error("--campaign-maps replaces --missions; give one of them")
     if args.campaign_maps and args.root is None:
@@ -2372,9 +2378,11 @@ def main(argv: list[str] | None = None) -> int:
         if args.root is None:
             ap.print_help()
             return 2
-        if args.dev_fixtures:
-            return dev_fixtures(args.root, missions, args.dev_fixtures,
-                                args.language, args.music, packs, plates)
+        if args.dev_fixtures or args.bundle:
+            return materialise(args.root, missions,
+                               args.bundle or args.dev_fixtures,
+                               args.language, args.music, packs, plates,
+                               bundle=args.bundle is not None)
         if args.out is None:
             ap.error("give -o, the caches directory to publish into")
         return convert_and_publish(args.root, missions, args.out, args.language,
