@@ -857,7 +857,10 @@ func buy(kind: String, slot: int, id: int) -> Dictionary:
 	if kind == KIND_WEAPONS:
 		return state.buy_weapon(0, slot, id, weapon_costs(), row,
 			equipment_costs(), Cheats.armoury(cheats))
-	return state.buy_equipment(0, slot, id, row)
+	var unit: UnitState = state.roster.record(slot)
+	var weapon_row: Dictionary = {} if unit == null \
+		else row_for(KIND_WEAPONS, unit.weapon)
+	return state.buy_equipment(0, slot, id, row, weapon_row)
 
 
 ## `id -> cost` for the equipment table, the same way.

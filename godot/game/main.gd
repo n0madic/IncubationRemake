@@ -1148,18 +1148,19 @@ func _resume_loaded_mission() -> void:
 ## `aInitBattleGround` (`0x0041DABD` -> `0x0042E811` -> `0x00419D90`), whose
 ## two arms are the same two a fresh mission has: with somebody still in the
 ## pool the placement interface goes up, and `0x0041A073` sets the counter
-## to 1 outright when nobody is. The first hand-over is then owed the way it
-## is on a fresh entry -- [method World.load_save] restores the re-entry
-## latch as `turn != 0` -- and *Next player* pays it, `NEXT TURN` and all.
+## to 1 outright when nobody is. **A load makes no hand-over at all**: its
+## program state goes straight to `aInitBattleGround`, past the view player's
+## init whose tail is the only mission-open `aNextPlayerHandling`, and the
+## re-entry latch comes back from the save already spent ([method
+## World.load_save]). So *Next player* after the placement takes the
+## ordinary `handOver(0)`.
 ##
-## The silent arm pays it here: [method World.open_mission] is the
-## `handOver(1)` arm that runs no script, exactly what [method _build] does
-## for a fresh map, and the skip must follow it (see [method
-## World.skip_deployment_turn] for why the order is forced). It is reached
-## only by a save the player took on turn 0 after placing everybody -- the
-## mission-start autosave is written with the pool full -- and **that save
-## lands on turn 1 with no `NEXT TURN`**, `0x0041A073`'s own answer
-## (docs/43 section 5.5, open question 4).
+## The silent arm is `setTurn(1)` alone -- no refresh, no fog pass, no
+## one-shot. It is reached only by a save the player took on turn 0 after
+## placing everybody -- the mission-start autosave is written with the pool
+## full -- and **that save lands on turn 1 with no `NEXT TURN`**; measured in
+## the running original by `hud_probe.py`'s `load_skip` / `load_deploy`
+## phases (docs/43 section 5.5).
 ##
 ## Separate from [method _resume_loaded_mission], and after
 ## [method _refresh_after_deploy], for two reasons: that one is the picture's
@@ -1169,7 +1170,6 @@ func _open_after_load() -> void:
 	if world == null or not world.deploying():
 		return
 	if _may_skip_deployment():
-		var _opened: TurnResult = world.open_mission()
 		_skip_deployment_turn()
 		_begin_mission_view()
 		return
@@ -1789,6 +1789,9 @@ func place_from_roster(slot: int, x: int, y: int, facing: int) -> Dictionary:
 	if result != World.DEPLOY_OK:
 		_say_deploy(result)
 		return placed
+	# `0x00478DE4`: the placement rebuilds the fog, which ends a take-back's
+	# hold ([method PictureFog.hold]).
+	_fog.release()
 	_refresh_after_deploy()
 	var slots: PackedInt32Array = campaign.state.roster.occupied_slots()
 	if slot == _deploy_slot or not slots.has(_deploy_slot):
@@ -1805,11 +1808,16 @@ func place_from_roster(slot: int, x: int, y: int, facing: int) -> Dictionary:
 func recall_at(x: int, y: int) -> Dictionary:
 	if campaign == null or campaign.state == null:
 		return {"result": World.RECALL_NO_UNIT, "slot": Roster.NO_SLOT}
+	# What the picture shows now is what the take-back leaves standing: the
+	# original rebuilds no fog here ([method PictureFog.hold]).
+	_resync_shown()
+	var shown_before: Dictionary[int, int] = _picture_fog()
 	var taken: Dictionary = campaign.recall(x, y)
 	var outcome: String = DictRead.as_string(taken["result"])
 	if outcome != World.RECALL_OK:
 		_say_deploy(outcome)
 		return taken
+	_fog.hold(shown_before)
 	_refresh_after_deploy()
 	_deploy_slot = Deployment.after_recall(
 		campaign.state.roster.occupied_slots(), _deploy_slot)
@@ -6714,13 +6722,11 @@ func attack_cell(x: int, y: int) -> AttackResult:
 		AttackCommand.create(slot, x, y))
 	# `0x0046C15E`, past `aAttackUnit`: the shooter says something about it.
 	_speak("attack", slot)
-	# `0x0047181C`: after the shot the shooter turns towards its best target
-	# band -- `aGetDirectionTo(x, y, 0)`, then `aChangeUnitViewDirection`.
-	if shot.fired and world.has_unit(slot):
-		var facing: int = world.facing_to_target(slot)
-		if facing != Combat.FACING_NONE:
-			var _turned: bool = world.submit_rotate(
-				RotateCommand.create(slot, facing))
+	# **No turn to the best target band afterwards** -- a deliberate
+	# divergence (docs/92 section 7.20 A6). The original's click handler
+	# (`0x0047181C`) follows the shot with `aGetDirectionTo(x, y, 0)` and
+	# `aChangeUnitViewDirection`, which swings the shooter to whichever enemy
+	# its bands rank first; here it stays facing where it fired.
 	# The `fire` event first, then one per reaction shot: the drain is the
 	# caller's and runs after `aAttackUnit` has played its own animation, so
 	# the return fire is drawn after the shot rather than beside it.

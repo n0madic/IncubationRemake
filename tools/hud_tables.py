@@ -283,6 +283,47 @@ PLACE_SOUND_CYCLE = 0x0051406C                 # <- [0x4FE344] click_2
 PLACE_SOUND_SITES = {0x0046348F: PLACE_SOUND_PLACE, 0x00463526: PLACE_SOUND_PLACE,
                      0x0046364A: PLACE_SOUND_CYCLE, 0x004636C0: PLACE_SOUND_CYCLE}
 
+#: docs/43 open question 3 -- the take-back rebuilds no fog.  Every routine
+#: `aTransferUnitFromMapToPool` reaches, and every routine the place
+#: interface's take-back arm runs after it (the panel painter `0x00463730`
+#: and the HUD-refresh flag setter `0x0041D6A0`), as `entry: size` -- the
+#: extents radare2's `af` gives them.  The check requires the set to be
+#: **closed** (every direct call out of a span lands on a span's entry, or on
+#: the assert stub `0x00453E00`, which is a bare `ret` in this build) and to
+#: contain none of the three routines that write `+0x4F`.  The indirect calls
+#: inside it are listed in docs/43 section 5.5 and reach no game code.
+TAKE_BACK_CLOSURE = {
+    # aTransferUnitFromMapToPool and what it reaches (27 routines).
+    0x00404BD0: 36, 0x00405350: 264, 0x00406000: 168, 0x0042F730: 69,
+    0x00435710: 994, 0x00435B30: 161, 0x00436980: 26, 0x0043B270: 6,
+    0x0043B280: 6, 0x0043B2C0: 6, 0x0043B310: 11, 0x0043B700: 46,
+    0x0043B740: 11, 0x0043BA00: 15, 0x004638E0: 69, 0x00472920: 101,
+    0x004738F0: 43, 0x00477980: 9, 0x00477990: 43, 0x004779C0: 265,
+    0x00477AE0: 136, 0x00478C10: 246, 0x00478F20: 298, 0x0047A240: 463,
+    0x004960F5: 97, 0x004AE7B6: 6, 0x004AE886: 6,
+    # the arm's tail: the panel painter and the refresh flag (46 more).
+    0x0041D6A0: 10, 0x00439610: 636, 0x00439890: 289, 0x004399C0: 315,
+    0x00439B00: 6, 0x00439B10: 106, 0x00439BE0: 121, 0x00439C60: 246,
+    0x004461A0: 8, 0x004461C0: 23, 0x004461E0: 23, 0x00446200: 23,
+    0x00446220: 23, 0x004475D0: 398, 0x00447900: 543, 0x00447B20: 43,
+    0x00447B50: 42, 0x00447BB0: 10, 0x0044B1B0: 49, 0x00453DF0: 6,
+    0x00461E70: 6, 0x00461E90: 88, 0x00463730: 138, 0x00463C10: 35,
+    0x00463C40: 113, 0x00470FE0: 108, 0x00471090: 55, 0x004710D0: 6,
+    0x00474220: 1549, 0x00474850: 660, 0x00474AF0: 210, 0x00474BD0: 98,
+    0x00474C40: 389, 0x00474DD0: 807, 0x00475100: 25, 0x00475120: 59,
+    0x00475240: 89, 0x004752A0: 64, 0x00475340: 55, 0x00475550: 45,
+    0x00475590: 22, 0x004756D0: 531, 0x004758F0: 180, 0x00475A60: 2047,
+    0x004807C0: 170, 0x00480870: 703,
+}
+TAKE_BACK_ROOTS = (0x00478F20, 0x00463730, 0x0041D6A0)
+TAKE_BACK_TAIL = ((0x00463502, 0x00463730), (0x00463509, 0x0041D6A0))
+TAKE_BACK_KILL = (0x00478FF9, 0x00472920)            # aKillUnit(cell x, cell y)
+ASSERT_STUB = 0x00453E00
+#: `aBuildVisibleMap`, `aBuildVisibleMapForUnit`, `aSetVisibleStateForUnit`.
+FOG_WRITERS = (0x004798C0, 0x004794B0, 0x00479370)
+#: `0x0041D6A0`: `mov eax, [esp+4]; mov [0x004FE360], eax; ret`.
+REFRESH_FLAG_BODY = bytes.fromhex("8b442404a360e34f00c3")
+
 PAD_HIT = 0x00473680
 PAD_RECT = {"x": [404, 494], "y": [382, 478], "stride": [30, 48]}
 PAD_X_LOW = 0x004736A0                         # cmp eax, 404
@@ -2013,6 +2054,62 @@ def check_place_interface(ck: Checker, pe: PEFile) -> None:
              {hex(va): mov_eax_abs32(pe, va) for va in PLACE_SOUND_SITES},
              {hex(va): buf for va, buf in PLACE_SOUND_SITES.items()},
              "click_1 for a placement or a take-back, click_2 for the band")
+    check_take_back_fog(ck, pe)
+
+
+def take_back_escapes(pe: PEFile) -> list[tuple[int, int]]:
+    """Direct calls out of [TAKE_BACK_CLOSURE] that land on no span's entry.
+
+    A byte sweep: an immediate that reads as `E8` can add a stray target, so
+    only targets inside `.text` count, and a stray one fails the check loudly
+    rather than hiding a call.
+    """
+    base, size, _raw, _rawsize = pe.section(".text")
+    allowed = set(TAKE_BACK_CLOSURE) | {ASSERT_STUB}
+    out: list[tuple[int, int]] = []
+    for entry, length in TAKE_BACK_CLOSURE.items():
+        for va in range(entry, entry + length - 4):
+            if pe.u8(va) != 0xE8:
+                continue
+            target = call_target(pe, va)
+            if target is not None and base <= target < base + size \
+                    and target not in allowed:
+                out.append((va, target))
+    return out
+
+
+def check_take_back_fog(ck: Checker, pe: PEFile) -> None:
+    """docs/43 open question 3, the static half: no fog pass on a take-back.
+
+    `tools/hud_probe.py`'s `recall` phase is the native half.
+    """
+    ck.check("place.take_back_kills",
+             call_target(pe, TAKE_BACK_KILL[0]) == TAKE_BACK_KILL[1]
+             and TAKE_BACK_KILL[1] in TAKE_BACK_CLOSURE,
+             "aTransferUnitFromMapToPool -> aKillUnit, inside the closure")
+    ck.equal("place.take_back_tail",
+             [call_target(pe, va) for va, _ in TAKE_BACK_TAIL],
+             [target for _, target in TAKE_BACK_TAIL],
+             "after the transfer the arm repaints the panel and raises the "
+             "refresh flag, nothing else")
+    ck.check("place.take_back_refresh_is_a_flag",
+             pe.bytes_at(TAKE_BACK_TAIL[1][1], len(REFRESH_FLAG_BODY))
+             == REFRESH_FLAG_BODY,
+             "0x0041D6A0 stores its argument into [0x004FE360] and returns")
+    ck.check("place.take_back_assert_stub_is_ret",
+             pe.u8(ASSERT_STUB) == 0xC3,
+             "the error reporter every arm calls is a bare ret in this build")
+    escapes = take_back_escapes(pe)
+    ck.check("place.take_back_closure_closed",
+             not escapes and all(r in TAKE_BACK_CLOSURE for r in TAKE_BACK_ROOTS),
+             f"{len(TAKE_BACK_CLOSURE)} routines, escapes "
+             f"{[(hex(a), hex(b)) for a, b in escapes]}")
+    ck.check("place.take_back_no_fog",
+             not set(FOG_WRITERS) & set(TAKE_BACK_CLOSURE)
+             and all(not calls_between(pe, entry, entry + length, writer)
+                     for entry, length in TAKE_BACK_CLOSURE.items()
+                     for writer in FOG_WRITERS),
+             "none of aBuildVisibleMap / ForUnit / aSetVisibleStateForUnit")
 
 
 def check_panel(ck: Checker, pe: PEFile) -> None:

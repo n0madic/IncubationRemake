@@ -1289,11 +1289,17 @@ editor on top of whatever the `.3DW` scene already contains. The engine draws
 and collides them in the same loops as the `.3DW` clones (`fcn.00453490` walks
 this array with stride `0x42` and then the clone array with stride `0x40`).
 
-They are *not* what the LCL commands `Platform`, `Elevator` and friends move —
+~~They are *not* what the LCL commands `Platform`, `Elevator` and friends move —
 `Platform`'s handler (`fcn.004422b0` -> `fcn.00412a00`) goes through the cell
-grid and displaces **land** objects via the cell's `+0x05` link. Nor are they
-what a cell's `+0x0F` / `+0x11` fields index; those point into a separate
-81-slot runtime array (`fcn.00404c00`).
+grid and displaces **land** objects via the cell's `+0x05` link.~~ **Corrected
+2026-09-26: `Platform` moves a record of this block.** The cell's `+0x05`
+link only names the centre cell's land marker, around which `0x00406F20`
+searches this table (`0x00412BF7`); the record it finds is the one the ride
+translates, `±0x140` a frame (`0x00412D00`), and the land lattice does not
+move. Measured on `_C_105`'s six rides: each moves one `L024EB00` record by
+`dist · 3200` ([`20` §7.4](20-lcl-language.md)). They are not what a cell's
+`+0x0F` / `+0x11` fields index; those point into a separate 81-slot runtime
+array (`fcn.00404c00`).
 
 | Offset | Type | Meaning | Confidence |
 |---|---|---|---|

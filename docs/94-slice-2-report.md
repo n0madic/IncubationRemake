@@ -107,6 +107,9 @@ That same difference settled the spawn slot. "One past the highest key" gives 10
 on one roster and 12 on the other, which are two different missions after the
 first reinforcement; both implementations now take the lowest slot in 0..199
 holding no live unit, and both record that the rule is UNVERIFIED.
+*(Measured 2026-09-26 -- §9 item 6: the lowest slot whose `+0x16` is 0 is
+the engine's rule too, for every lowest free slot below 199; at 199 the
+engine refuses and with no free slot it writes slot 200, past the array.)*
 
 **`docs/26` §6.1's ParaBomb claim was wrong.** A mine stepped on during a walk
 stops the walk and zeroes the movement points — measured — and fires
@@ -334,9 +337,28 @@ offered.
 5. ~~**The eight unsimulated target patterns**, listed in §5.~~ **Closed** —
    [`95` §5](95-slice-3-report.md): all sixteen are implemented, the five no
    shipped unit carries included.
-6. **The 200-slot spawn rule** is the natural reading of a fixed array and is
+6. ~~**The 200-slot spawn rule** is the natural reading of a fixed array and is
    not measured; a capture that inserts a unit and reads back which slot it took
-   would close it.
+   would close it.~~ **Closed 2026-09-26, and the natural reading is right only
+   below slot 199.** Every insertion reaches `aInsertUnit` `0x00477830` with a
+   slot of `-1`, which takes the lowest slot whose `+0x16` (hit points) is 0
+   -- a named record with no hit points included -- refuses when that slot is
+   **199** (`cmp ebx, 0xC7; jne`, `0x004778C5`), and, with no free slot at
+   all, writes the record at **slot 200**, one past the array
+   ([`20` §7.4](20-lcl-language.md), `InsertUnit`). `tools/turn_gold.py`
+   phase 15 (`spawn`) calls `aGenerateUnitElement` `0x00479CF0` on `_C_141`
+   in five arrangements and reads the whole array either side: slot 12 as
+   loaded (a `Human Soldier (1)` record at 0 hit points), 0 with slot 0's
+   `+0x16` cleared, 198, a refusal at 199, and slot 200 -- **5/5** on the
+   listing's rule, pinned by `spawn.*` in `--check`, with no other record
+   changed but its `+0x4B` (the rebuild `0x00407AA0` renumbers the 3D
+   objects). `inclib.lcl_runtime`'s `free_slot` is held to all five
+   (`spawn.*.model_agrees`): the listing's slot below 199, a refusal at 199
+   and at a full array. The remake refuses at both edges
+   (changed 2026-09-27): `UnitState.free_slot` answers `NO_FREE_SLOT` for
+   slot 199 and for a full array, so it refuses where the engine overruns
+   the array; `test_lcl.gd`'s `free_slot.*` pins it, and the Python model
+   follows the same rule. No shipped mission is known to reach 199 units.
 7. ~~**Bodies, animation and sound.** [`40`](40-charisma-model-animation.md),
    [`41`](41-sequence-player.md) and [`28`](28-effects-and-sound.md) are all
    untouched: a unit is still a capsule and a ground marker.~~ **Closed** by the

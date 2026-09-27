@@ -606,6 +606,86 @@ the aim point, the aim point is replaced by **that unit's own** `+0x42`/`+0x43`
 3. The attacker turns to face the target: `aChangeUnitViewDirection` writes
    `unit[+0x46]` with `direction(x, y, tx, ty)` (§7.4).
 4. `0x0046AA10` marks every cell the weapon covers.
+5. **The body is aimed — presentation only** *(read 2026-09-26, static; the
+   waist aim's matrices measured 2026-09-27, below; the picture is
+   UNVERIFIED against a retail frame)*. `0x0046B753`..`0x0046B962` switches on
+   the attacker's **type** into four classes (index bytes `0x0046C400`, arms
+   `0x0046C3D0`; types above 66 take class 2) and then on the weapon
+   (`cmp al, imm` at `0x0046B820`..`0x0046B850`), with
+   `(ax, ay, az)` the attacker's object position (`aGetStdObjectPosition`) and
+   `(tx, ty, tz)` the position of the target cell's symbol object
+   (`aGetSymbolObjectPtr(cell[+5])` `+0x10/+0x14/+0x18`):
+
+   | Class | Types | Target within 3200 units of height (`< 0xC81`) | Farther |
+   |---|---|---|---|
+   | 1 | 0–3, 21–23, 26, 56, 57 | level look-at | weapons 8, 42, 13 and every weapon not listed next: **waist aim** named `Unterkoerper` — it lands on that part's *parent*, the spine bone (`0x0042CD80`; `tz + 0x2580` for weapons 8, 42, 13 at `0x0046B924`, `tz + height/2` for the rest at `0x0046B89A`); weapons 3, 5, 10, 14, 45, 47: look-at `tz + height/2`; weapon 46: nothing |
+   | 2 | every type not listed | level look-at | look-at `tz + height/2` |
+   | 3 | 20, 55, 58, 59, 60, 66 | level look-at | level look-at |
+   | 4 | 61, 62, 63 | nothing | nothing |
+
+   *Level* means the target's z is replaced by the attacker's own `az`;
+   `height` is the **attacker's** type height, `SetUnitInfo` byte × 160
+   (`0x0047AD70`). The look-at is `0x00405250` → `0x0042CAC0`: it rewrites the
+   whole Charisma model's placement so that its authored −Y points along the
+   **exact** line to the target, pitch included
+   ([`40` §5.4](40-charisma-model-animation.md)). The waist aim installs an
+   external `Rotation matrix` movement through the model's `EXTERNAL`
+   animation and keeps the handle (`[esp+0x40]`); `0x0046C1A9` releases it
+   after `aPlayFightAnimation`, and the closing `aChangeUnitViewDirection` at
+   the end of §7.5 puts the octant rotation back (`0x004051E0` →
+   `0x0042C900`).
+
+   **What the waist aim does to the body** *(measured 2026-09-27 inside
+   `Incubation.exe`, `presentation_gold.py` phases `body_aim` and
+   `body_aim_marine`: 18/18 matrices replayed, 40 checks)*.
+   `0x0042CD80(model, String *name, tx, ty, tz)` — `name` is a pointer to a
+   `BB::String` holding `"Unterkoerper"` (`0x004CC660`), not a string by value.
+   It finds that part and then takes **its parent**: in every one of the 18
+   calls, on Sgt. Bratt (`P1_002`, `_6_.sav`) and on a marine (`P0_001`,
+   `_0_.sav`), the movement landed on the part whose bind matrix is
+   `Bip01 Wirbelsäule`'s, the spine bone `Unterkoerper` hangs from — so the
+   aim turns the lower spine and everything above it (both torso meshes,
+   arms, head, weapon), and the legs stay put. In the engine's float
+   convention (row-major, `M · v`, [`40` §5.1](40-charisma-model-animation.md)),
+   with `P` the model's placement (`V100Model + 0x34`), `E` the spine's
+   parent's (`Bip01 Becken`) Charisma-space world matrix, `t` the spine's
+   current local translation, and `R₀(M)` a matrix with its translation
+   cleared:
+
+   ```
+   pivot = translation of  P · E · T(t)                 (Charisma units)
+   d     = normalise((tx, ty, tz) / 16 − pivot)         (0x004B1334 = 1/16)
+   side  = normalise(d × ẑ);  up = normalise(side × d)
+   L     = columns (side, d, up)                        (0x0042CBA0, 0x00482A94)
+   Rw    = L · Rx(−15.5°) · Ry(−90°)                    (0x00482920, 0x00482991)
+   M     = R₀(E)⁻¹ · R₀(P)⁻¹ · Rw                       (0x00482B36, 0x00482AB3)
+   ```
+
+   `0x00482AB3(out, a, b)` is `out = a · b` and `0x00482B36` a true inverse
+   (a transpose misses on all 18), so `M` is `Rw` taken into the parent's
+   frame. `V100Part::Update` uses `M` **as the spine's whole local rotation**
+   and keeps the translation the animation gives it
+   ([`40` §6.4](40-charisma-model-animation.md)): one `Simulate` later the
+   spine's local is `[M | t]` exactly, and `R₀(P · world(spine)) = Rw` to
+   1e-7 on all 18. The fight clip started over it (`P0_F0_002` /
+   `P0_F0_001`, both with a rotation track on the spine) **does not displace
+   it** — the slot keeps the external movement for all six steps — while its
+   position track still moves `t` and its tracks on the pelvis move `E`: the
+   rotation is fixed **relative to the parent**, and in the world it drifts
+   with the pelvis (5.4° and 6.2° by the clip's `BREAK`). `0x004960F5` ends
+   it: one step after the release the spine is back on its bind matrix.
+
+   For a **level** target straight ahead the aimed spine is **35.8°** from its
+   unaimed bind on both bodies — not a small correction: the bind is yawed
+   about 25° off the facing, which the aim squares to the target line, and
+   the aim leans the spine forward by 15.5° plus the sight line's own pitch.
+   The game reaches this routine only across more than 3200 units of height,
+   so the level case is a measurement, not a game path. The ±90° branch of
+   `0x0042CBA0` (`fcomp` against 1e-5 at `0x0042CC81`) is never taken: it
+   tests `|side| − 1` after normalising, which is 0.
+
+   Neither reads or writes a rule byte; `unit[+0x46]` stays the
+   octant throughout.
 
 ### 7.2 The target pattern — **[code] `0x0046AA10`**
 
@@ -1304,9 +1384,9 @@ the jump table `0x0040E614`/`0x0040E5D4` sends id 46 to index 14 and there):
 5. `0x00477970(record, 11)` — `+0x56`, the animation handle
    ([`42` §6.2.1](42-mission-presentation.md)) — and `0x004FEA4C = 1`, the
    flag the hatch arm also raises (`0x0046F3B0`) and `aAttackUnit` clears at
-   `0x0046B967`; its one reader, `0x0046C1A9`, skips a call through a
-   `NewToolsR` object's vtable (`0x004960F5`). Both are presentation;
-   **UNVERIFIED** what that object is.
+   `0x0046B967`; its one reader, `0x0046C1A9`, skips releasing the shooter's
+   waist aim (`0x004960F5`) because step 2 has just destroyed and rebuilt
+   every body on the map — §9.4.4. Both are presentation.
 
 **The remake implements it** (2026-09-24): `Combat.attack` runs the arm beside
 `CellObjects.place_impact`, the switch's other map-changing arms, through
@@ -1392,6 +1472,99 @@ epilogues, and the `aGetCtrlMapElementPtr` call), `spore.spawn` 8/8,
 10/10 (each handler and the name the dispatcher compares `0x36` bytes before
 it), `spore.statue` 3/3, `spore.corpus_spores`, `spore.corpus_unused` 3/3 and
 `spore.unit_type` 3/3.
+
+### 9.4.4 What `0x004FEA4C` guards: a dangling aim handle
+
+*(Closed 2026-09-26, static — Ghidra and the raw bytes; §12 item 1.)* The
+flag has exactly four references in `.text` (`/x 4cea4f00`): the clear at
+`0x0046B967`, the two sets (`0x0040D6FC` weapon 46, `0x0046F3B0` special 9)
+and the read at `0x0046C1A9`. The read guards
+
+```c
+if (!flag && obj[+0x45] != NULL && aimHandle != NULL)     /* 0x0046C1A9 */
+    0x004960F5(obj[+0x45], aimHandle);
+```
+
+with `obj` = `[esp+0x3C]`, the attacker's 77-byte object record from
+`aGetStandardObjectPtr(unit[+0x4B])` (`0x00404BD0`), and `aimHandle` =
+`[esp+0x40]`, zeroed at `0x0046B785` and written only by §7.1 step 5's two
+`0x0042CD80` calls — the waist aim named `Unterkoerper`, which lands on its
+parent spine bone (§7.1 step 5).
+
+**The object is a Charisma model, not a `NewToolsR` class.** `obj[+0x45]` is
+the `V100Model` every unit body is (`0x00406500` stores it there;
+`aChangeStdObjectPosition` `0x004050A0` and the angle writer `0x004051E0`
+hand it to `0x0042C890` / `0x0042C900`). `NewToolsR.dll` exports nothing but
+`BB::String`, `BB::DList*` and the error manager; the only `NewToolsR`
+object on this path is the `BB::String` `"EXTERNAL"` at `0x005242A8`
+(initialised at `0x004958B2`), which is what made the earlier reading look
+like one. `0x004960F5` is the **release** of an external movement:
+
+```c
+anim = model->vtbl[0x18]("EXTERNAL");     /* the model's EXTERNAL StdAnimation  */
+if (anim) {
+    anim->vtbl[0x14](handle);             /* drop this movement                 */
+    if (!anim->vtbl[0x08]())              /* none left:                          */
+        model->vtbl[0x08](anim);          /*   drop the animation from the model */
+}
+```
+
+Its pairing proves the role: `0x00495FCB` finds-or-creates the same
+`"EXTERNAL"` `StdAnimation` (`new(0x58)`, constructor `0x0049C92B`), and
+`0x00495D38` adds a movement to it (`new(0x5C)`, slot `+0x10`) and returns the
+handle; `aDeleteStd` (`0x00405350`) calls `0x004960F5(model, obj[+0x49])`
+before it deletes a model, `obj[+0x49]` being the `Wimpel` / `Visibility`
+external movement every body gets at `0x00406500`. The slot meanings are read
+off that pairing rather than off the `StdAnimation` vtable itself.
+
+**Why the two arms must skip it.** Both reach `aGenerateUnitElement`
+(`0x00479CF0`), whose insert `0x00477830` does not add one body — it rebuilds
+**all** of them:
+
+1. `aStopAllCHAnimations` (`0x00405D00`): `0x00405FB0` frees every running
+   Charisma animation (`aFreeCHAnimation` over the slot table at
+   `0x004FA830`), then every unit's `+0x56` handle is cleared;
+2. `aBuild3DStdObjects` (`0x00407AA0`): `0x00405060` frees the animations
+   again, calls the Charisma world's slot `+0x24` on `[0x004FAE30]` and zeroes
+   every object's state `+0x40`, model `+0x45` and handle `+0x49`; then
+   `0x00479AE0` re-inserts **every live unit** through `0x00406500`, which
+   takes the **first free** object slot, creates a new model (world slot
+   `+0x28`), places it at the unit's cell and octant, attaches a fresh
+   `Wimpel` handle, and writes the new slot index to `unit[+0x4B]`.
+
+After that the shooter's `aimHandle` belongs to a model that no longer exists,
+and `obj` — a pointer computed from the *old* `unit[+0x4B]` — may now name a
+different unit's body. Releasing would hand a dangling movement pointer to
+whichever live `EXTERNAL` animation that is. The flag says "the bodies were
+rebuilt"; the other two conditions say "the shooter's body was deleted"
+(`aDeleteStd` zeroes `+0x45`) and "nothing was aimed". It is also why both
+arms rebuild the fog straight after the spawn: `0x00406500` inserts every body
+with state 1 (drawn), so the fog pass is what hides again what was hidden.
+
+Two further facts bound it:
+
+* **for weapon 46 the flag is redundant.** §7.1 step 5 installs no aim for
+  weapon 46 in any class, so `aimHandle` is already 0. It matters for
+  `special` 9 (the Squee'Coo replacement, phase 4 at `0x0040DA52` inside
+  `aPlayFightAnimation`), where the shooter can be a class-1 human firing
+  across more than a field of height;
+* **no other spawn is in the window.** Of the fourteen `call 0x00479CF0`
+  sites, only `0x0040D685` (weapon 46) and `0x0046F33F` (phase 4) run between
+  the clear and the read. Phase 3 (`0x0046F210` case 3, the four-way split)
+  is dispatched from `aExecuteMove` (`0x0046EE3F`), phase 5 (case 6) from
+  `0x004759D1`, and the other five are LCL command handlers (`0x004149BD`,
+  the spore hatch of §9.4.3, and four in `0x004419A0`..`0x00442212`), which
+  the script reaches through §7.5's `aRunLCL` after the read. This is a
+  direct-call reading; an indirect path into a handler was not searched for.
+
+**What it means for the remake: nothing to do for the flag itself** — it
+guards a pointer, and no rule byte is read or written on either side of it.
+The side effect it exists for is visible, though: in the original, the
+moment weapon 46 or `special` 9 spawns a unit, every body on the map is torn
+down and rebuilt in its bind pose at its octant, dropping whatever clip was
+playing (the shooter's own included) and any look-at. **UNVERIFIED against a
+retail frame**; the remake does not reproduce the reset and needs no rule
+change for it.
 
 ### 9.5 The other thing `aRemoveUnitElement` does: the hero counter
 
@@ -1589,13 +1762,22 @@ asserts the ten names §1.1 depends on.
 
 ## 12. Open questions
 
-1. **What `0x004FEA4C` suppresses** (opened 2026-09-24, §9.4.2). Weapon 46's
-   impact arm and the hatch arm both set it after their permanent fog rebuild;
-   `aAttackUnit` clears it at `0x0046B967` and reads it once, at `0x0046C1A9`,
-   to skip `0x004960F5([ecx+0x45], [esp+0x40])` — a call through a
-   `NewToolsR` object's vtable (`+0x18`, `+0x14`, `+0x08`). No simulation state
-   is read on that path, which is why the remake leaves it out; what the
-   object is (a status line, the shot's text) has not been traced.
+None open. Closed most recently:
+
+1. ~~**What `0x004FEA4C` suppresses**~~ (opened 2026-09-24, §9.4.2; **closed
+   2026-09-26**, §9.4.4). It suppresses the **release of the shooter's
+   waist aim** — `0x004960F5(model, handle)` drops the
+   external `Rotation matrix` movement that `0x0042CD80` put on the spine
+   bone above `Unterkoerper` (§7.1 step 5) from the model's `"EXTERNAL"` `StdAnimation`, and the
+   animation too once it is empty. The object is the unit's Charisma
+   `V100Model` (`obj[+0x45]`), not a `NewToolsR` class: `NewToolsR` only
+   supplies the `BB::String` `"EXTERNAL"`, which is what the earlier reading
+   saw. Both arms that raise the flag call `aGenerateUnitElement`, whose insert
+   (`0x00477830`) frees every Charisma animation and deletes and re-creates
+   every body on the map (`aStopAllCHAnimations`, `aBuild3DStdObjects`), so
+   the handle dangles and the object record may now be another unit's; the
+   flag is the guard. For weapon 46 it is redundant (that weapon installs no
+   aim); for `special` 9 it is live. Nothing for the remake to implement.
 
 Closed:
 

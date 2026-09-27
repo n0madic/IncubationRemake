@@ -557,8 +557,9 @@ func shift_objects(cells: PackedInt32Array, offset: Vector3i) -> int:
 ## The ride's end: the objects on each of `cells` now stand `dx, dy` fields
 ## away and are keyed there, as the engine's are once its loop has added
 ## `dist * 10` steps to their positions. `core` has already copied the
-## cells' height and type (`0x00412FFB`), so `snapshot` is read for the
-## height delta the destination cell will apply from now on -- the moved
+## cells' type and objects (`0x00412FFB`) but not their height, so
+## `snapshot` is read for the height delta the destination cell will apply
+## from now on -- the moved
 ## object's authored transform is set so that [method apply_state] lands it
 ## where the ride left it. A destination off the map leaves the object
 ## where it was, as a source it cannot reach. Answers how many moved.

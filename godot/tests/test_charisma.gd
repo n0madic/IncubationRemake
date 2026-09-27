@@ -61,6 +61,11 @@ const TOLERANCE: float = 1e-3
 ## linear paths would still look broad and would pin neither `squad` nor the
 ## cubic Bezier vector -- the two places the engine's maths is not the
 ## textbook's.
+## `presentation_gold.py --emit-aim-cases`, staged by `test_gates.sh`.
+const AIM_CASES: String = "res://generated/presentation/aim.json"
+const AIM_SCHEMA: String = "incubation.aim-cases/1"
+## Nine targets on each of the two captured bodies; a thinner file fails.
+const AIM_LEAST_CASES: int = 18
 const REQUIRED_KEY_CLASSES: Array[String] = ["LinearRotationKey",
 	"LinearVectorKey", "BezierRotationKey", "BezierVectorKey"]
 
@@ -688,6 +693,7 @@ func _shooting(h: TestHarness, clips: Dictionary[String, CharismaClip]) -> void:
 		node.basis.is_equal_approx(WorldSpace.yaw_basis(
 			UnitsView.FACING_ANGLES[facing])),
 		"turned to facing %d, four fields away" % facing)
+	_aimed_body(h, world, slot, x, y, step)
 
 	# Driven the way `_process` drives it: fixed steps, and the body is not
 	# free until the whole reported length has passed.
@@ -725,18 +731,17 @@ func _shooting(h: TestHarness, clips: Dictionary[String, CharismaClip]) -> void:
 	h.equal("shot.null_clip_returns_to_the_idle", units.states[slot].mode,
 		CharismaState.Mode.IDLE,
 		"the body a missing clip left in FIRE for ever comes back")
-	# **The aim record's lifetime.** The twist lives on the body and
-	# [method CharismaBody.apply] reads it every pose, so an aim that outlived
-	# its clip would leave the unit idling with a turned waist. Off-axis, or
-	# there would be no twist to lose.
+	# **The aim record's lifetime.** An aim that outlived its clip would leave
+	# the unit idling turned off its octant.
 	units.states[slot] = CharismaState.create(null, without, without, with_break)
 	var _held: float = units.fire(slot, x + step, y + 1)
-	h.check("shot.aim_is_raised", units.aim_twist_of(slot) != 0,
-		"twist %d engine units at (%d, %d) -> (%d, %d)"
-			% [units.aim_twist_of(slot), x, y, x + step, y + 1])
+	h.check("shot.aim_is_raised", units.aim_count() == 1
+		and units.aim_mode_of(slot) != AttackAim.MODE_NONE,
+		"mode %s at (%d, %d) -> (%d, %d)"
+			% [units.aim_mode_of(slot), x, y, x + step, y + 1])
 	units.rest(slot)
 	h.equal("shot.rest_drops_the_aim", units.aim_count(), 0,
-		"the shot's end takes the twist with it")
+		"the shot's end takes the aim with it")
 	units.states[slot] = CharismaState.create(null, without, without, null)
 	var _none: float = units.fire(slot, x + step, y + 1)
 	units.animate(tick, world)
@@ -868,122 +873,221 @@ func _unnamed_part(h: TestHarness) -> void:
 	body.free()
 
 
-## The aiming twist of docs/92 section 7.20: the remainder the engine's eight
-## octants leave, and what the body does with it.
-##
-## The angle half is pure arithmetic and needs no cache. The body half does,
-## and answers "no model" rather than failing when the cache carries none --
-## the same shape as [method _unnamed_part].
+## `aAttackUnit`'s body aim (docs/22 section 7.1 step 5): which of the four
+## classes does what, and the look-at `0x0042CAC0` builds.
 func _aim(h: TestHarness) -> void:
-	# Straight down an octant leaves nothing to twist. Facing 3 is `dx > 0`.
-	h.equal("aim.on_the_octant_is_zero",
-		UnitsView.aim_twist(0, 0, 4, 0, 3), 0, "dx = 4, dy = 0")
-	h.equal("aim.the_diagonal_is_zero",
-		UnitsView.aim_twist(0, 0, 4, 4, 6), 0, "45 degrees is facing 6")
-	# `direction`'s own sector edge: |dy/dx| just under 0.5 stays on the axis,
-	# and the twist is the whole of what the octant lost. A quarter turn is
-	# 1024 units, so 14 degrees is about 159.
-	var shallow: int = UnitsView.aim_twist(0, 0, 4, 1, Combat.direction(0, 0, 4, 1))
-	h.equal("aim.the_shallow_shot_twists", shallow, -160,
-		"dx = 4, dy = 1 -- 14.0 degrees back off the +x octant")
-	h.equal("aim.the_octant_is_the_axis", Combat.direction(0, 0, 4, 1), 3,
-		"|dy/dx| = 0.25 is under the 0.5 threshold")
-	# The worst the engine's unequal sectors can produce is half of the widest
-	# one -- the 67.38 degrees along y -- which is 33.69 degrees, 383 units.
-	# Not half of the 53.13-degree x sector: the two thresholds are not each
-	# other's reciprocals, and this loop is what caught the delivered comment
-	# that said they were.
-	var worst: int = 0
-	for dx: int in range(-40, 41):
-		for dy: int in range(-40, 41):
-			var twist: int = UnitsView.aim_twist(0, 0, dx, dy,
-				Combat.direction(0, 0, dx, dy))
-			worst = maxi(worst, absi(twist))
-	h.check("aim.no_shot_twists_past_the_sector",
-		worst > 370 and worst <= 384,
-		"worst %d units (%.1f degrees) over 81 x 81 offsets"
-			% [worst, float(worst) / 4096.0 * 360.0])
-	# The sign: a target left of the octant twists one way and right the other.
-	h.check("aim.the_sign_follows_the_target",
-		UnitsView.aim_twist(0, 0, 4, 1, 3) == -UnitsView.aim_twist(0, 0, 4, -1, 3),
-		"symmetric about the axis")
+	var at: Vector3i = Vector3i(0, 0, 1000)
+	var level_to: Vector3i = Vector3i(3200 * 4, 3200, 1000 + 3200)
+	var high_to: Vector3i = Vector3i(3200 * 4, 3200, 1000 + 3201)
+	var height: int = 2400
+	var raised: Vector3i = Vector3i(high_to.x, high_to.y, high_to.z + height / 2)
+	var cases: Array = [
+		["class_1_near_is_level", 0, 0, level_to, AttackAim.MODE_LOOK,
+			Vector3i(level_to.x, level_to.y, at.z)],
+		["class_1_far_half_height_weapon", 1, 5, high_to, AttackAim.MODE_LOOK,
+			raised],
+		["class_1_far_weapon_46_does_nothing", 2, 46, high_to,
+			AttackAim.MODE_NONE, at],
+		["class_1_far_fixed_part_aim", 3, 42, high_to, AttackAim.MODE_PART,
+			Vector3i(high_to.x, high_to.y, high_to.z + 9600)],
+		["class_1_far_other_weapon_aims_the_part", 21, 0, high_to,
+			AttackAim.MODE_PART, raised],
+		["class_2_far_looks_half_way_up", 30, 0, high_to, AttackAim.MODE_LOOK,
+			raised],
+		["class_3_far_stays_level", 55, 0, high_to, AttackAim.MODE_LOOK,
+			Vector3i(high_to.x, high_to.y, at.z)],
+		["class_4_never_aims", 62, 0, level_to, AttackAim.MODE_NONE, at],
+	]
+	for entry: Variant in cases:
+		var c: Array = entry
+		var type_id: int = c[1]
+		var weapon: int = c[2]
+		var to_cell: Vector3i = c[3]
+		var plan: Dictionary = AttackAim.plan(type_id, weapon, at, to_cell,
+			height)
+		h.equal("aim.plan.%s" % c[0], [plan["mode"], plan["target"]],
+			[c[4], c[5]])
 
-	# The body half: the pivot is the waist, and the twist moves the weapon.
+	# **The convention, pinned against the octant builder.** A level look-at
+	# along an octant must be exactly the body `0x0042C900` places for that
+	# facing: `look * charisma_offset == charisma_yaw_basis(angle)`.
+	var worst: float = 0.0
+	for facing: int in range(UnitsView.FACING_ANGLES.size()):
+		var angle: int = UnitsView.FACING_ANGLES[facing]
+		var turn: float = float(angle) / 4096.0 * TAU
+		var to: Vector3i = Vector3i(roundi(sin(turn) * 32000.0),
+			roundi(cos(turn) * 32000.0), 0)
+		var look: Basis = AttackAim.look_basis(Vector3i.ZERO, to,
+			Basis.IDENTITY) * WorldSpace.charisma_offset()
+		var want: Basis = WorldSpace.charisma_yaw_basis(angle)
+		for axis: int in range(3):
+			worst = maxf(worst, (look[axis] - want[axis]).length())
+	h.check("aim.level_look_is_the_octant_placement", worst < 1e-3,
+		"worst column error %.5f over the eight facings" % worst)
+	# The body's authored forward lies on the exact line, pitch included, and
+	# the frame stays upright and right-handed.
+	for to: Vector3i in [Vector3i(12800, 3200, 0), Vector3i(-3200, 9600, 6400),
+			Vector3i(4000, -7000, -5000)]:
+		var body_basis: Basis = AttackAim.look_basis(Vector3i.ZERO, to,
+			Basis.IDENTITY) * WorldSpace.charisma_offset()
+		var forward: Vector3 = body_basis * CharismaBody.AUTHORED_FORWARD
+		var line: Vector3 = WorldSpace.to_godot_v(Vector3(to)).normalized()
+		h.check("aim.forward_on_the_line.%d_%d_%d" % [to.x, to.y, to.z],
+			forward.distance_to(line) < 1e-4
+				and (body_basis * Vector3.UP).y > 0.0
+				and absf(body_basis.determinant() - 1.0) < 1e-4,
+			"forward %s, line %s" % [forward, line])
+	# The engine placement the octant builder writes is what the body draws:
+	# `engine_matrix(P)` -- no transpose -- is `charisma_yaw_basis`.
+	var placement_worst: float = 0.0
+	for angle: int in UnitsView.FACING_ANGLES:
+		var drawn: Basis = WorldSpace.engine_matrix(
+			AttackAim.placement_for(angle, Vector3i.ZERO)).basis
+		var want_basis: Basis = WorldSpace.charisma_yaw_basis(angle)
+		for axis: int in range(3):
+			placement_worst = maxf(placement_worst,
+				(drawn[axis] - want_basis[axis]).length())
+	h.check("aim.placement_is_the_octant_body", placement_worst < 1e-5,
+		"worst column error %s over the eight facings" % str(placement_worst))
+	_spine_aim_cases(h)
+	h.equal("aim.a_target_overhead_keeps_the_facing",
+		AttackAim.look_basis(Vector3i.ZERO, Vector3i(0, 0, 5000),
+			WorldSpace.yaw_basis(1024)), WorldSpace.yaw_basis(1024))
+
+
+## `0x0042CD80` against the running original: every captured target's
+## inputs through [method AttackAim.spine_local], held to the matrix the
+## engine wrote (`presentation_gold.py --emit-aim-cases`).
+func _spine_aim_cases(h: TestHarness) -> void:
+	if not FileAccess.file_exists(AIM_CASES):
+		h.check("aim.spine_fixture", false,
+			"run python3 tools/presentation_gold.py --emit-aim-cases "
+			+ "tests/fixtures/presentation/cases_aim.json")
+		return
+	var document: Dictionary = CacheLoader.read_json(AIM_CASES)
+	if not h.equal("aim.spine_schema", document.get("schema"), AIM_SCHEMA):
+		return
+	var tolerance: float = DictRead.as_float(document["tolerance"])
+	var cases: Array = DictRead.as_array(document["cases"])
+	var worst: float = 0.0
+	var matched: int = 0
+	for entry: Variant in cases:
+		var c: Dictionary = entry
+		var target: PackedInt32Array = DictRead.to_int32(c["target"])
+		var got: PackedFloat64Array = AttackAim.spine_local(
+			PackedFloat64Array(DictRead.as_array(c["placement"])),
+			PackedFloat64Array(DictRead.as_array(c["parent_world"])),
+			PackedFloat64Array(DictRead.as_array(c["local"])),
+			Vector3i(target[0], target[1], target[2]))
+		var want: PackedFloat64Array = PackedFloat64Array(
+			DictRead.as_array(c["written"]))
+		var diff: float = 0.0
+		for k: int in range(16):
+			diff = maxf(diff, absf(got[k] - want[k]))
+		worst = maxf(worst, diff)
+		if diff < tolerance:
+			matched += 1
+	h.check("aim.spine_matches_the_engine",
+		cases.size() >= AIM_LEAST_CASES and matched == cases.size(),
+		"%d/%d within %s, worst %s" % [matched, cases.size(), str(tolerance),
+			str(worst)])
+
+
+## The aim on a real body, through [method UnitsView.fire]: the whole model
+## turned onto the exact line (a level target, one field off the octant's
+## axis), the node left on the octant, and the octant back once the shot
+## rests. Then the spine hold of [method CharismaBody.aim_spine]: the chest
+## moves, the feet do not, and a release puts the pose back.
+func _aimed_body(h: TestHarness, world: World, slot: int, x: int, y: int,
+		step: int) -> void:
 	var cache_dir: String = CacheFixture.cache_dir()
 	var document: Dictionary = CacheFixture.read_json(
 		"%s/models/P0_000.json" % cache_dir)
 	if document.is_empty():
-		h.check("aim.model_present", false, "the cache carries no P0_000")
+		h.check("aimed.model_present", false, "the cache carries no P0_000")
 		return
 	var model: CharismaModel = CharismaModel.from_document(document)
 	var library: CharismaLibrary = CharismaLibrary.open(cache_dir,
 		CacheFixture.texture_index("A00"), "_C_140")
 	var body: CharismaBody = CharismaBody.create(model, library)
 	if body == null:
-		h.check("aim.body_builds", false, "no mesh for P0_000 in this cache")
+		h.check("aimed.body_builds", false, "no mesh for P0_000 in this cache")
 		return
-	h.equal("aim.the_pivot_is_the_waist", model.aim_pivot(),
-		"Bip01 Wirbelsäule",
-		"the joint above where the legs branch off the weapon's chain")
-	h.check("aim.the_legs_stand_still",
-		not model.turns_with_aim("Fuss_R")
-			and not model.turns_with_aim("Bip01 Becken"),
-		"hips and feet are outside the twist")
-	h.check("aim.the_weapon_turns",
-		model.turns_with_aim(CharismaBody.AIM_WEAPON_PART)
-			and model.turns_with_aim("Kopf"),
-		"%d bone(s) turn with the aim" % model.aim_part_count())
+	var units: UnitsView = UnitsView.new()
+	units.shown_ref = world
+	var node: Node3D = Node3D.new()
+	node.name = "unit_%d" % slot
+	units.add_child(node)
+	node.add_child(body)
+	units.bodies[slot] = body
+	var clip: CharismaClip = null
+	units.states[slot] = CharismaState.create(body, clip, clip, clip)
+	# A target within a field of the shooter's height, one field off the
+	# octant's axis: the level look-at, not class 1's spine aim.
+	var here: int = DictRead.as_int(world.cell_view(x, y)["height"])
+	var tx: int = -1
+	var ty: int = -1
+	for dy: int in [1, -1, 2, -2]:
+		for dx: int in [step, -step]:
+			var cell: Dictionary = world.cell_view(x + dx, y + dy)
+			if tx < 0 and not cell.is_empty() and absi(DictRead.as_int(
+					cell["height"]) - here) <= AttackAim.NEAR_HEIGHT:
+				tx = x + dx
+				ty = y + dy
+	if tx < 0:
+		h.check("aimed.level_target", false, "no level cell off the axis")
+		units.free()
+		return
+	var _length: float = units.fire(slot, tx, ty)
+	var from: Vector3i = Vector3i(x, y, 0) * WorldSpace.WORLD_UNITS_PER_FIELD
+	var line: Vector3 = WorldSpace.to_godot_v(Vector3(
+		(tx - x) * WorldSpace.WORLD_UNITS_PER_FIELD,
+		(ty - y) * WorldSpace.WORLD_UNITS_PER_FIELD, 0.0)).normalized()
+	var forward: Vector3 = (node.basis * body.basis) \
+		* CharismaBody.AUTHORED_FORWARD
+	h.check("aimed.the_body_is_on_the_line",
+		units.aim_mode_of(slot) == AttackAim.MODE_LOOK
+			and forward.distance_to(line) < 1e-4,
+		"mode %s, forward %s, line %s" % [units.aim_mode_of(slot), forward,
+			line])
+	var facing: int = Combat.direction(x, y, tx, ty)
+	h.check("aimed.the_node_keeps_the_octant",
+		node.basis.is_equal_approx(WorldSpace.yaw_basis(
+			UnitsView.FACING_ANGLES[facing])), "the ground marker's frame")
+	units.rest(slot)
+	var rested: Vector3 = (node.basis * body.basis) \
+		* CharismaBody.AUTHORED_FORWARD
+	var octant: Vector3 = WorldSpace.charisma_yaw_basis(UnitsView.FACING_ANGLES[
+		facing]) * CharismaBody.AUTHORED_FORWARD
+	h.check("aimed.rest_puts_the_octant_back",
+		units.aim_count() == 0 and rested.distance_to(octant) < 1e-4,
+		"forward %s, octant %s" % [rested, octant])
+
+	# The spine hold, on the same body.
 	body.pose(null, 0.0)
-	var rested: Vector3 = body.part_position(CharismaBody.AIM_WEAPON_PART)
-	body.aim_twist = 302
-	body.pose(null, 0.0)
-	var aimed: Vector3 = body.part_position(CharismaBody.AIM_WEAPON_PART)
-	h.check("aim.the_muzzle_moves_with_it",
-		rested.distance_to(aimed) > 0.01,
-		"the muzzle travelled %.3f m at 26.5 degrees"
-			% rested.distance_to(aimed))
+	var head: Vector3 = body.part_position("Kopf")
 	var foot: Vector3 = body.part_position("Fuss_R")
-	body.aim_twist = 0
+	var held: Dictionary[String, PackedFloat64Array] = body.aim_spine(
+		AttackAim.placement_for(0, from), from + Vector3i(0, 16000, 9600))
+	# **No pose in between**: a clip standing at its note poses nothing, so
+	# the hold has to redraw the pose itself -- else a body rebuilt mid-shot
+	# stands untilted until the resume.
+	h.check("aimed.the_spine_is_held",
+		held.has("Bip01 Wirbelsäule")
+			and body.part_position("Kopf").distance_to(head) > 0.01
+			and body.part_position("Fuss_R").distance_to(foot) < 1e-6,
+		"held %s; the head moved %.3f m" % [held.keys(),
+			body.part_position("Kopf").distance_to(head)])
+	body.release_aim()
+	h.check("aimed.release_restores_the_pose",
+		body.part_position("Kopf").distance_to(head) < 1e-6,
+		"0x004960F5 detaches the movement")
+	# The rebuild's order: the state poses the fresh body first, the held
+	# rotation arrives after it, and nothing poses again before the resume.
 	body.pose(null, 0.0)
-	h.check("aim.the_foot_does_not",
-		foot.distance_to(body.part_position("Fuss_R")) < 1e-6,
-		"a twist leaves the stance alone")
-	h.check("aim.zero_is_the_pose_untouched",
-		rested.distance_to(body.part_position(CharismaBody.AIM_WEAPON_PART))
-			< 1e-6,
-		"no twist is bit-for-bit the clip")
-	# **The sign, end to end.** A twist that turned the waist the wrong way
-	# would double the error instead of cancelling it, and every check above
-	# passes either way -- they only ask that something moved. So stand the
-	# body up the way [method UnitsView.face] does, measure the muzzle's own
-	# bearing about the pivot before and after, and require the change to be
-	# the twist itself in the engine's own clockwise-from-+Y convention.
-	var stand: Node3D = Node3D.new()
-	stand.add_child(body)
-	UnitsView.face(stand, body, 3)
-	body.aim_twist = 0
-	body.pose(null, 0.0)
-	var before: int = _bearing(body, model)
-	body.aim_twist = -160
-	body.pose(null, 0.0)
-	var after: int = _bearing(body, model)
-	var turned: int = posmod(after - before + 2048, 4096) - 2048
-	h.check("aim.the_waist_turns_the_way_it_was_asked",
-		absi(turned - (-160)) <= 2,
-		"asked -160 engine units, the muzzle moved %d" % turned)
-	stand.remove_child(body)
-	stand.free()
-
-	body.free()
-
-
-## The muzzle's bearing about the twist joint, in engine angle units --
-## clockwise from engine +Y, which is what [constant UnitsView.FACING_ANGLES]
-## is measured in.
-func _bearing(body: CharismaBody, model: CharismaModel) -> int:
-	var muzzle: Vector3i = WorldSpace.from_godot(
-		body.part_position(CharismaBody.AIM_WEAPON_PART))
-	var pivot: Vector3i = WorldSpace.from_godot(
-		body.part_position(model.aim_pivot()))
-	return roundi(atan2(float(muzzle.x - pivot.x), float(muzzle.y - pivot.y))
-		/ TAU * float(WorldSpace.ANGLE_FULL_TURN))
+	body.hold_rotations(held)
+	h.check("aimed.a_rebuilt_body_takes_the_hold_at_once",
+		body.part_position("Kopf").distance_to(head) > 0.01,
+		"the head moved %.3f m" % body.part_position("Kopf").distance_to(head))
+	body.release_aim()
+	units.free()

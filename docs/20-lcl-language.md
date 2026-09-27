@@ -903,6 +903,25 @@ jumps into the normal arm below 3 rather than testing separately.
   enemy; a hit is written through `aChangeUnitViewDirection` `0x004792A0`,
   which leaves types 61..63 unturned. So a spawned unit faces the enemy, not
   facing 0.
+* **the slot** is `aInsertUnit` `0x00477830`'s, called with a slot of `-1`
+  (`0x00479F6E`) -- as every insertion in the game calls it (`0x00472829`,
+  `0x004728CC`, `0x0041C25C`): walk the array from slot 0 and take the first
+  whose **`+0x16` is 0** (`0x004778B2`, `mov al, [edi+0x16]; test al, al;
+  je`) -- the hit points alone, so a named record whose hit points are 0 is
+  free and is overwritten whole. The walk stops at 200, and the one test
+  after it is `cmp ebx, 0xC7; jne` (`0x004778C5`): a lowest free slot of
+  **199 is refused** (`-1`, and `0x00479CF0` returns 0 with nothing written),
+  while an array with **no** free slot leaves the walk at 200, which is not
+  199, so the record is written at **slot 200 -- one past the end of the
+  array**, into whatever the heap holds there (`aGetUnitMapElementPtr`'s own
+  bound, `cmp eax, 0xC8; jle` at `0x00477B0A`, admits 200 too). The insert
+  ends in `0x00407AA0` (`0x00477962`), which rebuilds the standard objects
+  and renumbers every placed unit's `+0x4B`. **Measured 2026-09-26**
+  (`tools/turn_gold.py` phase 15, `spawn`, 5/5 arrangements on `_C_141`):
+  as loaded the spawn takes slot 12, a `Human Soldier (1)` record with
+  `+0x16 = 0`; with slot 0's `+0x16` cleared it takes 0; with every free slot
+  below 198 filled it takes 198; below 199 it refuses; with all 200 filled it
+  writes slot 200. In every case no other record changes but its `+0x4B`.
 
 Corpus values agree: argument 1 is always `255` (computer) in `InsertUnit` and
 `0` in `InsertUnitWithGroup (0,21,"Dr.Reich",…)`; argument 4 ∈ {0,1,2,4,255}
@@ -1058,16 +1077,32 @@ north/south axis. The corpus confirms it independently: `_C_166.lcl` fires
 
 1. collects the 3×3 block of cells centred on `(x,y)` — **x outer, y inner**
    (`0x00412AAA`) — and every unit standing on them;
-2. animates for `dist·10` frames, translating the land objects, the units and
-   the camera target by `±0x140` per frame along `dir`;
+2. animates for `dist·10` frames, translating the units, the camera target,
+   every effect object on the block's cells (`cell[+0x0F]`, `0x00412D9C`)
+   and **the special object its search finds** by `±0x140` per frame along
+   `dir`. The search is `0x00406F20` in a 5000-unit box around the **centre
+   cell's marker** (`0x00412BF7`), and the translation is written into that
+   object's record in the special-object table (`0x00412D00`/`0x00412D03`),
+   so after the ride the record stands `dist · 3200` further on -- measured,
+   see the table paragraph under the ActPt-range family below. With no object
+   in the box the animation is skipped (`je 0x412eba`) and steps 3-5 still
+   run;
 3. relocates every rider `dist` tiles along `dir` through `0x0047AD90`
    (`0x00412F9A`), one at a time: the map's unit index, `+0x42`/`+0x43`, the
    3D object, and then a **writing** visibility pass from the new cell
    ([`22` §9.3](22-combat-and-visibility.md)) — before any cell is copied,
    so the pass sees the destination block's old heights;
-4. copies each source cell's object/height/type fields to the cell `dist` tiles
-   away, clears the source cell's unit index and sets its control-map type to
-   **4** (`Deep Hole`) (`0x00412FFB` onwards);
+4. copies each source cell's `+0x0F` (effect object), `+0x10` (obstacle),
+   `+0x0E` (countdown) and `+0x0D` (field type) to the cell `dist` tiles away,
+   then writes the source cell's `+0x0F` = 0, `+0x10` = `0xFF`, `+0x0E` = 0,
+   `+0x0C` = 0, unit index `0xFFFF` and control-map type **4** (`Deep Hole`)
+   (`0x00413011`..`0x0041307F`). **The height `+0x01` is not copied** --
+   corrected 2026-09-26: this step read "object/height/type" until then, and
+   neither capture could tell, both blocks being at height 0 on `_C_141` and
+   on `_C_105`. `presentation_gold.py`'s `land_table_platform_height` raises
+   the first `_C_105` ride's source block to 1600 before the call: after it
+   the source cells are still at 1600 and the destination cells still at 0,
+   9/9 each, while the field types moved;
 5. rebuilds the fog for the **selected** unit's player (`0x004130E6`,
    [`22` §9.4](22-combat-and-visibility.md)), and for nobody when nothing is
    selected.
@@ -1139,8 +1174,15 @@ but unused.
 **`FootBridge (x, y, frames, minUnits)`** — **[code] `0x00442650` →
 `0x00414a70`**, *aPlayFootBridgeSequence*. The wrapper first counts the units
 standing in the 3×3 block around `(x,y)` (`0x0046fba0`) and **runs the sequence
-only if that count is greater than `minUnits`**. The routine sets all nine
-cells' control-map type to 4 (`Deep Hole`) and plays a `frames`-step collapse.
+only if that count is greater than `minUnits`**, calling it as
+`(x, y, frames, 0)`. The routine sets all nine cells' control-map type to 4
+(`Deep Hole`) -- freeing a fire, mine or shield on any of them first
+(`0x00414B96`..`0x00414BBF`: `aDeleteSpecialObject` on `+0x0F`, then
+`+0x0F` = 0, `+0x10` = `0xFF`, `+0x0E` = 0) -- and plays a `frames`-step
+collapse of the object `0x00406F20` finds in a 5000 × 5000 × 5000 box
+around the **command cell's own marker** (`cell[+0x05]` through
+`aGetSymbolObjectPtr`, `0x00414C4F`..`0x00414CA4`), which it frees with
+`aDeleteLand` at the end (`0x00414F49`).
 The one shipped call is `_C_107.lcl:76` `FootBridge (16,18,30,1);` — the bridge
 gives way once a second man steps onto it, in the mission whose own comment is
 *"Mission complete when all men are on the winning platform"*.
@@ -1336,9 +1378,58 @@ The table is `[0x004FA80C]`, counted by `[0x004FA7B4]`. `aLoadFile` reads the
 `.lev`'s special-object records and their count straight into it
 (`0x00407C94`); `aInsertLandObject` `0x00404E30` appends (`GroundUnit`,
 `FallingSpores`, `GrowingLand`) and `aDeleteLand` `0x00406C30` removes
-(`Spores`, `CrushWall`, `FootBridge`, `FootBridge2`) -- nothing else writes the
-count. The remake keeps it in `MapState`, hashed and saved (save schema 12,
+(`Spores`, `CrushWall`, `FootBridge`, `FootBridge2`) -- and nothing else
+reachable from a script writes the count; the one other writer is
+`aBattleSystem.cpp`'s dispatcher `0x0041C010` (inserts at `0x0041C2C7` and
+`0x0041CB5D`, a delete at `0x0041CAD8`), whose role is **UNVERIFIED**. The
+remake keeps it in `MapState`, hashed and saved (save schema 12,
 [`92` §7.3](92-remake-architecture.md)).
+
+**What the table does, read live** (2026-09-26, `tools/presentation_gold.py`'s
+`land_table_*` phases; the four readings item 12 below left open):
+
+* **The load.** `0x00407C70` reads the `.lev`'s 724-byte block 1 into
+  `0x004FA528` -- whose `+0x28C` is `[0x004FA7B4]` -- and then the whole
+  9 900-byte block 2 (150 × 66) into the buffer `[0x004FA80C]` points at
+  (`0x00404C70(0)`); the fix-up `0x00404D30` re-resolves each counted
+  record's prototype. Every loadable shipped mission (all but `_I_001`,
+  whose `World_Z00` the release lacks) was wrapped into `_6_.sav` and loaded
+  with `aLoadGame`: the count is the `.lev`'s on **152/152**, every counted
+  record's position, rotation, joints and prototype bytes are the `.lev`'s,
+  and the block past the count is the file's byte for byte.
+* **`Platform` moves the record** (step 2 above). `_C_105`'s six rides, in
+  script order: each moves exactly one record -- the `L024EB00` platform its
+  search finds, records 8, 8, 7, 7, 44, 44 -- by `dist · 3200` along `dir`
+  (`+0x10`/`+0x14` only), and the return ride of each pair finds the record
+  where the first ride left it, which only a moved table can answer. 6/6.
+  **`MoveWorld` does not touch it**: its per-frame `0x00407E30` translates
+  the `.3DW` clone array `[0x004FA818]`, counted by `[0x004FA7B8]` (stride
+  `0x40`), and nothing else (static; no shipped call site but `_C_132:91`).
+* **A run-time object's footprint is its own cell.** `aInsertLandObject`
+  places the record at the marker it is given (`FallingSpores` at z 32 000
+  under an effect-stream heading, `0x004146D3`; `GroundUnit`'s `L110EX00` at
+  the hole's marker, heading 0, `0x0041237D`; `GrowingLand` at the grown
+  cell's marker, `0x00470064`), and the sweep `0x0042F410(object, 1, 0, 1)`
+  that `Spores` runs on what it finds marks exactly that cell: inserted live
+  on `_C_174` and swept, three `L016EH00` spores at headings 0, 700 and
+  2348, one `L110EX00` and one `L022EH00` each mark their own cell and no
+  other, 5/5; and `inclib.footprint` gives the same one cell for each of the
+  three models at **all 4 096** headings -- no vertex of the three meshes
+  lies more than 2 263 units from its origin (`L022EH00`'s corners; the spore
+  1 628, the hole 1 697), and the nearest probe a neighbouring cell casts is
+  3 000 away.
+* **`FootBridge`'s search is anchored on the command cell's marker**
+  (above): on `_C_107` the marker of (16,18) is `(51200, 57600, 0)`, the
+  cell's origin at its height; the search finds record 5, the `L025EB00`
+  bridge, and the collapse frees exactly it -- the count drops by one and
+  the records above it move down in order (`aDeleteLand`'s compaction).
+
+Two limits of the table the listing shows and no shipped mission reaches:
+`aInsertLandObject` refuses only a count **above** 150 (`cmp eax, 0x96;
+jle`, `0x00404E37`), so a table at exactly 150 takes a 151st record past its
+buffer; and it increments the count **before** resolving the model
+(`0x00404E74`), so an "unknown object" leaves a counted record behind it.
+`GrowingLand` and `FallingSpores` stop at 140 (above), well short of both.
 
 **`FallingSpores (x, y, w, h, count, actPt, "model.3DI", height)`** —
 **[code] `0x00441f60` → `0x00414550`**. Note the argument order: the string
@@ -2021,7 +2112,7 @@ carry the field through without inventing a meaning.
     it is `0` at all 413 shipped call sites means no *mission script* exercises
     it — the flag is set from the editor instead — not that the behaviour is
     unverified.
-12. **The special-object table beyond its count** *(opened 2026-09-24)*. The
+12. ~~**The special-object table beyond its count** *(opened 2026-09-24)*. The
     remake models `[0x004FA80C]` as `{model, x, y, z}` records (§7.4's
     `Spores` / `GrowingLand` notes). Four readings are **UNVERIFIED**:
     (a) the load's count equals the `.lev`'s special-object count -- read off
@@ -2033,7 +2124,33 @@ carry the field through without inventing a meaning.
     cell, since the converter projects footprints for `.lev` records only; and
     (d) `FootBridge`'s search is anchored on the command cell's marker. None
     changes a shipped mission's outcome that we know of; each is a place a
-    live read with `dbgcall` would settle it.
+    live read with `dbgcall` would settle it.~~ **Closed 2026-09-26** by
+    `tools/presentation_gold.py`'s `land_table_*` phases (§7.4, the paragraph
+    after the table's own): (a) the count and the records are the `.lev`'s on
+    152/152 loadable missions; (c) a run-time spore, hole or growth marks its
+    own cell and nothing else, 5/5 live and 4 096/4 096 headings by
+    `inclib.footprint`; (d) `FootBridge` searches around the command cell's
+    marker and frees the `L025EB00` it finds. (b) closed **against the
+    remake**: `Platform` moves the found record `dist · 3200` in the table,
+    6/6 on `_C_105`, and `MoveWorld` leaves the table alone (it moves the
+    `.3DW` clones). The same capture corrected `Platform`'s step 4: the ride
+    does not carry the cell height. **The remake follows** (changed
+    2026-09-27): (a), (c) and (d) already matched --
+    `MapState.from_resource` loads the converter's records in table order,
+    `LclContext.footprint_of` falls back to the record's own cell for a
+    run-time record, and `_foot_bridge` searches `marker(x, y)` in a
+    5000-unit box. `Platform.ride` now moves the record its search finds
+    (`MapState.move_land_object`), leaves both cells' heights alone and
+    carries `+0x0E`..`+0x10` with the type; `_foot_bridge` frees a fire,
+    mine or shield on the block first. `test_lcl.gd`'s
+    `synthetic.platform_*` and `foot_bridge.frees_a_fire_on_the_block`
+    pin them, each mutation-checked against the old rule. Not followed: the
+    source cell's `+0x0C` and its unit link (`0xFFFF`) are not cleared,
+    because the remake keeps a refused rider's link (§7.4 step 3).
+    `inclib.lcl_runtime` follows the cell half too (the height stays, the
+    three effect bytes move, `FootBridge` frees the block's objects); it
+    carries no special-object table, so the record move is the remake's
+    alone.
 
 ### Settled since the previous edition
 
@@ -2051,6 +2168,8 @@ carry the field through without inventing a meaning.
 | Which `MoveUnit` host path runs when | Settled for both hosts: the UI selects on its pending-command global, the AI on the warp-destination overlay `0x3c` (§5, item 10). |
 | `?_`'s behaviour and storage | Settled (§7.4); only the name is missing. |
 | `SetVarRandom`'s distribution | Settled: `0x00463870(0, n)` = uniform in `0 … n-1`. |
+| The special-object table's load, `Platform`'s and `FootBridge`'s use of it, and a run-time object's footprint (item 12) | Settled live, 2026-09-26 (§7.4, `presentation_gold.py` `land_table_*`). |
+| Which slot `InsertUnit` fills | Settled live, 2026-09-26: the lowest `+0x16 == 0`, refused at 199, slot 200 when full (§7.4, `turn_gold.py` phase 15). |
 
 Two things earlier editions had no way to see turned up on the way:
 `SetVarVar` is broken in the shipped interpreter (§8.2), and eight weapon

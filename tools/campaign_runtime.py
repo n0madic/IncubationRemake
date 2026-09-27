@@ -281,6 +281,19 @@ def check_economy(ck: Checker, ctx: Context) -> None:
     ck.expect("economy.resale_recomputed",
               state.roster.row(cam.ROW_LIVE)[0].resale, 8,
               "+0x5A is (cost + 50) / 10, in tens")
+    # ``aBuyWeapon`` ends with ``0x004759E0``, which refills ``+0x3D`` to the
+    # new weapon's magazine; ``aBuyEquipment`` too, so the Ammo Pack doubles
+    # it (``docs/43`` §5.5).
+    refilled = ctx.begin(2)
+    refilled.set_points(0, 200)
+    refilled.recruit(0, weapon_zero_cost=cost, speech=1)
+    refilled.buy_weapon(0, 0, 5, costs=costs, weapon_mun=12)
+    ck.expect("economy.weapon_purchase_refills",
+              refilled.roster.row(cam.ROW_LIVE)[0].ammo, 12)
+    refilled.buy_equipment(0, 0, cam.EQUIP_DOUBLE_MUNITION, cost=25,
+                           weapon_mun=12)
+    ck.expect("economy.ammo_pack_doubles_the_refill",
+              refilled.roster.row(cam.ROW_LIVE)[0].ammo, 24)
     ck.expect("economy.resale_scale_is_tens",
               cam.PoolRecord().raw[cam.OFF_RESALE], 0)
     # ``0x004776E0`` values the kit: with an item carried the same swap caches

@@ -26,6 +26,9 @@ const DIR_DX: Array[int] = [0, -1, 0, 1]
 const DIR_DY: Array[int] = [-1, 0, 1, 0]
 ## The control-map type the vacated cells are left as (docs/10 section 4.2).
 const CTRL_TYPE_DEEP_HOLE: int = 4
+## `0x00412BF7` -- the half-size of the box `0x00406F20` searches around the
+## centre cell's marker for the object the ride carries.
+const SEARCH_BOX: Vector3i = Vector3i(5000, 5000, 5000)
 
 
 ## `0x0047AD90` -- one unit, cell to cell, looking around afterwards.
@@ -66,6 +69,19 @@ static func ride(state: MapState, units: Dictionary, utab: UnitTypeTable,
 	for ox: int in [-1, 0, 1]:
 		for oy: int in [-1, 0, 1]:
 			block.append(Vector2i(x + ox, y + oy))
+	# Step 2's special object: the record the search finds beside the centre
+	# cell's marker is carried `dist` tiles in the table (`0x00412D00`), so a
+	# return ride finds it where this one left it. With none the animation is
+	# skipped and the rest still runs.
+	if state.in_bounds(x, y):
+		var carried: int = state.find_land_object(Vector3i(
+			x * MapResource.WORLD_UNITS_PER_FIELD,
+			y * MapResource.WORLD_UNITS_PER_FIELD,
+			state.height_at(state.index_of(x, y))), SEARCH_BOX)
+		if carried != MapState.NO_LAND_OBJECT:
+			var _carried: bool = state.move_land_object(carried,
+				dx * MapResource.WORLD_UNITS_PER_FIELD,
+				dy * MapResource.WORLD_UNITS_PER_FIELD)
 	var riders: Array[UnitState] = []
 	for cell: Vector2i in block:
 		if not state.in_bounds(cell.x, cell.y):
@@ -88,8 +104,17 @@ static func ride(state: MapState, units: Dictionary, utab: UnitTypeTable,
 			continue
 		var src: int = state.index_of(cell.x, cell.y)
 		var dst: int = state.index_of(tx, ty)
-		state.set_height(dst, state.height_at(src))
+		# `0x00413049`..`0x00413074`: the effect object, the obstacle, the
+		# countdown and the field type go; the source keeps 0 / `0xFF` / 0 and
+		# becomes a hole. **The height stays** on both cells -- measured with
+		# the source raised to 1600 (docs/20 section 7.4 step 4).
+		for slot: int in [MapState.OBJECT_SLOT, MapState.OBSTACLE_SLOT,
+				MapState.TIMER_SLOT]:
+			state.set_effect(slot, dst, state.effect_at(slot, src))
 		state.set_field_type(dst, state.field_type_at(src))
+		state.set_effect(MapState.OBJECT_SLOT, src, 0)
+		state.set_obstacle(src, MapState.OBSTACLE_NONE)
+		state.set_effect(MapState.TIMER_SLOT, src, 0)
 		state.set_field_type(src, CTRL_TYPE_DEEP_HOLE)
 		moved += 1
 	return moved

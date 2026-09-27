@@ -944,11 +944,38 @@ matrix; the root's local transform is excluded there. That matters, because the
 root matrix is not identity in most models — only 48 of 237 have an identity
 root, the rest carry a z ≈ 100 translation and a real rotation, i.e. the
 model's overall placement. `0x004842a2` is dead code in the shipped binary (no
-caller); the live path is the `StdPart` one, which starts from the model's own
-transform. `tools/cho_export.py` *includes* the root's local matrix, which only
-shifts the whole figure and is invisible in a normalised contact sheet.
-**Whether the engine applies the root node's matrix or replaces it with the
-model's placement transform is UNVERIFIED.**
+caller); the live path is the `StdPart` one. `tools/cho_export.py` *includes*
+the root's local matrix, which only shifts the whole figure and is invisible in
+a normalised contact sheet.
+
+**The live path applies the root node's matrix** *(closed 2026-09-26, read with
+Ghidra and pinned against the raw bytes; §11 item 5)*. Three routines settle it:
+
+1. `StdModel`'s part builder `0x0049fccf(model, parentPart, node)` walks the
+   `SkeletonDesc` from its root node (`*(skeletonDesc + 4)`, reached from
+   `0x0049ed2c`) with `parentPart` = `model[+0x98]`, the synthetic `ROOT` part
+   `V100Model::ConstructModel` made (§6.2), and recurses over `node[+0x5c]`, the
+   child list `BuildSkeleton` fills. Each call constructs the part whose
+   descriptor is `node[+0x54]` and hands it the node.
+2. `StdPart::ConstructPart` (`0x0049cfb4`) copies the node's 16 floats —
+   `node + 0x14`, exactly where `SkeletonNode::Load` (`0x0048432c`) writes them
+   through the element accessor — into the part's bind matrix (`part - 0xac`),
+   or writes identity (`0x00482784`) when it is given no node, and then calls
+   the part's own `SetLocalMatrix` (vtable `+0x34`) with it. The file's root
+   bone therefore starts life with **its own `SkeletonNode` matrix as its local
+   transform**, one level below `ROOT`.
+3. `StdPart::GetWorldMatrix` (`0x0049db84`) answers **identity** for a part with
+   no parent (vtable `+0x04`) and `parentWorld · local` otherwise. The synthetic
+   `ROOT` contributes nothing to a bone's Charisma-space world matrix; the
+   placement is a separate matrix on the model (`0x0042c890` / `0x0042c900`,
+   §5.4), which `0x0042c660` multiplies on explicitly when the game asks where a
+   named part is.
+
+So `world(top-level bone) = local(top-level bone)`, and that local is the
+node's matrix until `V100Part::Update` (§6) replaces its rotation with a bound
+Rotation track or its translation with a bound Position track. The placement
+is composed *on top of* it, not *instead of* it. `tools/cho_export.py`,
+`tools/inclib/pose.py` and the remake's `CharismaSkeleton` all do exactly this.
 
 Example — `Bip01 L Bein` of `P0_000` yields `t = (-1.67e-5, 2.83e-5, 13.217)`, a
 pelvis→leg offset of 13.2 units along +Z; `Fuss_L` yields
@@ -982,10 +1009,23 @@ determined and not merely plausible.
 16 is `1 << 4`, the same fixed-point shift [`30` §2.5](30-eng3d-ascii-formats.md)
 records for `.3DW` positions.
 
-**Where the engine applies it is UNVERIFIED.** It is not `StdModel`'s scale —
-§6.2 shows that defaults to `(1, 1, 1)` and no shipped file changes it — so it
-lives in the Charisma-to-Eng3d bridge, which is not decompiled. The number is
-verified; its origin is not.
+**Where the engine applies it** *(closed 2026-09-26)*. It is not `StdModel`'s
+scale — §6.2 shows that defaults to `(1, 1, 1)` and no shipped file changes it.
+It is the Charisma-to-Eng3d bridge, at both ends:
+
+* **out of Charisma**: `V100Part`'s `SetLocalMatrix` (`0x004a625c`) converts a
+  part's float matrix into the integer matrix of its Eng3d node element by
+  element — the nine rotation entries `fmul [0x004b38e8]` (`16384.0`, Q14) and
+  the three translation entries `fmul [0x004b38ec]` (**`16.0`**), then
+  `__ftol`. No entry is negated or permuted beyond the storage order (§5.4);
+* **into Charisma**: every game-side placement multiplies a world coordinate
+  by `[0x004b1334]` = **`0.0625`** — the model's position in `0x0042c890`
+  (all three axes, `0x0042c89c` / `0x0042c8ad` / `0x0042c8bb`), the look-at
+  target in `0x0042cac0`, the aim target in `0x0042cd80`.
+
+Charisma space is therefore one sixteenth of the world, bones and placement
+alike, and a mesh — whose vertices are Eng3d prototype geometry in world units
+— is drawn under a node whose translation has been multiplied back by 16.
 
 Checked by `python3 tools/charisma_tables.py --check gog_incubation`.
 
@@ -1027,13 +1067,52 @@ eight rotations written against the opposite convention; the remake carried
 both errors and they cancelled, so the bodies were right and the reason was
 not.
 
-**Where the engine does this is UNVERIFIED**, for the same reason §5.3's scale
-is: it is in the Charisma-to-Eng3d bridge, which is not decompiled. What is no
-longer open is *what kind* of correction it is: a **mirror in y** was once said
-to fit the eight facings equally well, and it does — but only against the
-reflection-shaped formula above. A half turn for a backwards-authored model
-leaves a mirror nothing to explain, and the `Hand_R` argument it needed is now
-supporting rather than load-bearing.
+**Where the engine does this, and that it is a rotation** *(closed 2026-09-26,
+§11 item 6; static, Ghidra plus the raw bytes)*. Every orientation the game
+gives a body goes through one of two routines, and both add a half turn:
+
+* **the facing** — `0x004051e0` (no recovered name; reached from
+  `aChangeUnitViewDirection` `0x004792a0`, whose third argument is
+  `fcn.0046A6E0(unit[+0x46])`, and the object insert `0x00406500` calls the
+  same `0x0042c900` directly) stores the three `i16` angles
+  at object `+0x20/+0x22/+0x24` and calls `0x0042c900(model, ax, ay, az)`.
+  That routine keeps the model matrix's translation and replaces its rotation
+  with `[0x004FA4E4](ax, ay, az + 0x800, out)` — `add eax, 0x800` at
+  `0x0042c943`, `call [0x4fa4e4]` at `0x0042c953`.
+  `[0x004FA4E4]` is Eng3d's `_E3D_init_matrix_RzRxRy`, the same builder every
+  piece of Eng3d geometry is turned by (`tools/inclib/eng3d.py`
+  `Tables.matrix3`, 8/8 against a native capture). The nine Q14 results are
+  scaled by `[0x004b1348]` = 2⁻¹⁴ and stored **transposed**
+  (`m(r, c) = out[3c + r]`);
+* **the aim** — `0x0042cac0` (from `0x00405250`, `aAttackUnit`'s look-at, see
+  [`22` §7.1](22-combat-and-visibility.md)) builds a look-at matrix whose
+  *columns* are `side = d × ẑ`, `d`, `up = side × d` (`0x00482695` is the plain
+  cross product, `0x00482a94` writes a column), so the model's **+Y** is put on
+  the target, and then post-multiplies a rotation by `π · 180 / 180` about the
+  model's own z (`0x00482a01` mixes columns 0 and 1) — the model's **−Y** ends
+  up on the target.
+
+Neither path, nor the conversion into Eng3d (`0x004a625c`, §5.3: positive
+factors only, storage transposition only), contains a negative scale, a
+negated axis or a swapped pair. The determinant of the placement is therefore
+that of `Rz Rx Ry`, which is +1: `matrix3(0, 0, a + 0x800)` measures 0.9995 to
+0.9998 of `16384³` for all eight facing angles. The bones cannot supply a
+mirror either: over all **17 397** `SkeletonNode` matrices of the 237 `.cho`
+files **none has a negative determinant** (three are the singular ones §5.1
+lists). So the reconciliation is a **half-turn rotation about the model's own
+up axis**: in memory order the builder's `+0x800` is `diag(−1, −1, 1) · M`, and
+after the transposition that is `Mᵀ · Rz(π)` — the turn acts in model space
+first, which is what makes it the model's up and not the world's on a tilted
+object (the look-at's explicit post-multiply says the same).
+
+A consequence worth stating: the body has the **same handedness as Eng3d
+geometry** on the same screen. The bind pose is authored as a right-handed
+Z-up figure facing −Y, whose right side is −X, and it is: `P0_000`'s `Hand_R`
+sits at x = −23.5 and `Fuss_R` at −22.3, `Hand_L` at +62.3 and `Fuss_L` at
++27.4. The marine's weapon part `M` hangs under `Hand_R`, so it is drawn in
+the **right** hand. (Whether Eng3d's own projection shows the world
+mirror-imaged is a property of the whole scene, not of the bodies, and outside
+this question.)
 
 The remake carries this as `WorldSpace.charisma_yaw_basis` and
 `CharismaBody.AUTHORED_FORWARD`, checked by `godot/tests/test_charisma.gd`;
@@ -1100,9 +1179,10 @@ tracks target a direct child of the skeleton root, 104 target the root bone
 itself, and 648 target deeper bones.)
 
 `External*Movement` components exist for exactly this slot: game code calls
-`0x0042cd80` to install an external `Rotation matrix` movement on a named part
-and then writes a 4×4 into it directly — that is how turret aiming overrides an
-animation.
+`0x0042cd80` to install an external `Rotation matrix` movement and then writes
+a 4×4 into it directly — that is how `aAttackUnit`'s waist aim overrides an
+animation. What that matrix is, which part it lands on and how it combines
+with a playing clip are measured in §6.4.
 
 ### 6.1 Quaternion component order — **`(x, y, z, w)`**
 
@@ -1257,6 +1337,54 @@ Samples live in `tools/out/skeletons/`:
 If the quaternion order, the matrix layout, the translation semantics or the
 parent chain were wrong, these would come out collapsed, inside out or
 scrambled. They do not.
+
+### 6.4 An external rotation movement — measured
+
+*(2026-09-27, inside `Incubation.exe` under `tools/dbgcall`:
+`presentation_gold.py` phases `body_aim` and `body_aim_marine`, 18 aims on two
+bodies, 40 checks; the game-side rule is [`22` §7.1](22-combat-and-visibility.md)
+step 5.)*
+
+`0x00495C99(model, partName, "Rotation matrix", priority)` builds an
+`ExternalRotationMovement` (the string at `0x004F78A0`), attaches it to the
+part's rotation slot — channel 1, `part + 0xC4` — through the model's
+`"EXTERNAL"` animation, and returns it; its 4×4 lives at `+0x44`
+(`0x00495A53`) and the caller writes it. From then on it is an ordinary
+occupant of the slot:
+
+* **It replaces the rotation, not the matrix.** `V100Part::Update` builds the
+  local exactly as §6 says, with the external matrix in place of the
+  rotation track's: one `Simulate` after the write, the part's local
+  (`part + 0x70`) is the written 3×3 with the translation column the position
+  path produced — bind translation when no clip is playing, bind plus the
+  clip's position track when one is. 18/18.
+* **A clip cannot take the slot back.** `AttachMovement` (`0x004A6653`)
+  refuses a newcomer whose priority is not above the occupant's, and the aim
+  attaches at `0x65`. Starting the unit's `F` clip over it (`fcn.004055E0(3,
+  unit, 1)`; `P0_F0_002` and `P0_F0_001` both carry a rotation track on the
+  aimed bone) left the slot holding the external movement and the local
+  rotation equal to the written matrix on all 6 steps of both bodies, while
+  the clip's position track moved the translation and its tracks on the
+  parent moved the parent.
+* **It is relative to the parent.** `StdPart::GetWorldMatrix` stays
+  `parentWorld · local` (6/6 per body with the clip playing), so what the
+  written matrix fixes is the part's rotation *in its parent's frame*.
+  `0x0042CD80` writes `R₀(parentWorld)⁻¹ · R₀(placement)⁻¹ · Rw`, which puts
+  the part at world rotation `Rw` at the moment it is written; a clip that
+  then moves the parent carries the part with it (5.4° and 6.2° off `Rw` by
+  the fight clip's `BREAK`).
+* **Releasing it restores the bind.** `0x004960F5(model, movement)` detaches
+  it; the next `Simulate` puts the part's local back on its bind matrix
+  exactly (or on the clip's rotation, if one is bound by then).
+
+`V100Model`'s placement is the 16 floats at `+0x34`: `0x0049E4B8`, reached
+through vtable `0x004B21A4` slot 0, copies them, and `0x0042CD80` reaches the
+same routine as `[[model + 4 + vbase] + 0]`. The setter (slot 1, `0x0049F916`)
+also hands the matrix to the synthetic `ROOT` part's `SetLocalMatrix`, but
+`GetWorldMatrix` answers identity for `ROOT` (§5.2), so the placement is still
+composed on top of a bone's world matrix and not inside it — the capture's
+parent matrices are Charisma-space (`Bip01 Becken` at z ≈ 103) while the
+placement carries the object's position / 16.
 
 ---
 
@@ -1623,7 +1751,7 @@ to act on it rather than merely read it:
    **resolved as far as the shipped artefacts allow**, not open in the sense of
    "not looked at".
 
-Still genuinely open — **six items**:
+Still genuinely open — **four items** (items 5 and 6 closed 2026-09-26 and item 7 on 2026-09-27, kept below in place):
 
 1. **What `weight` was for.** §4.10 proves the field is never read at runtime by
    either binary. Its *intent* — the class name and the constant value 100 both
@@ -1646,22 +1774,39 @@ Still genuinely open — **six items**:
    synthesised streams only. They match the reader code instruction for
    instruction, but no shipped file confirms them.
 
-5. **Whether the engine applies the root `SkeletonNode`'s own matrix**, or
-   replaces it with the model's placement transform (§5.2). §6.2 narrows this —
-   the root bone's *translation* is taken from its Position track, not from the
-   bind pose — but the disposition of the root node's rotation when no rotation
-   track is bound is still inferred. `0x004842a2` (which would answer it) is
-   dead code in the shipped binary. **UNVERIFIED.**
+5. ~~**Whether the engine applies the root `SkeletonNode`'s own matrix**, or
+   replaces it with the model's placement transform (§5.2).~~ **Closed
+   2026-09-26** — §5.2. It is applied. The live path is not `0x004842a2` but
+   `StdModel`'s part builder `0x0049fccf`, which constructs the file's root
+   bone as the child of the synthetic `ROOT` part and hands it its own
+   `SkeletonNode`; `StdPart::ConstructPart` (`0x0049cfb4`) copies `node + 0x14`
+   (the 16 floats `0x0048432c` loads) into the bind matrix and sets it as the
+   part's local transform; `StdPart::GetWorldMatrix` (`0x0049db84`) answers
+   identity for the parentless `ROOT`, so the root bone's world matrix *is* its
+   local one. The placement is a separate model matrix
+   (`0x0042c890` / `0x0042c900`) composed on top. A bound Rotation or Position
+   track replaces the corresponding half exactly as §6 states; with none bound,
+   the node's rotation stands.
 
-6. **Whether the −Y authored forward (§5.4) is reconciled by a rotation or by a
-   mirror in y.** The eight facings determine the *result* — the body's yaw is
-   half a turn minus `docs/10` §5.10's angle — and that is measured. Both a
-   plain rotation and a y-mirror produce it, and they differ by swapping the
-   body left for right, which no measurement here separates because a biped is
-   near-symmetric. The bridge that would answer it is not decompiled. **The
-   discriminator is cheap and known**: the marine's weapon is parented under
-   `Hand_R`, so one screenshot of the original showing it in the left hand says
-   mirror. **UNVERIFIED.**
+6. ~~**Whether the −Y authored forward (§5.4) is reconciled by a rotation or by a
+   mirror in y.**~~ **Closed 2026-09-26** — §5.4. A rotation: `0x0042c900`
+   adds `0x800` (half a turn) to the third angle it hands Eng3d's
+   `_E3D_init_matrix_RzRxRy` (`[0x004FA4E4]`) and stores the result
+   transposed, and the attack look-at `0x0042cac0` post-multiplies an explicit
+   `Rz(π)`; no negation, negative scale or axis swap occurs there or in the
+   Eng3d conversion `0x004a625c`; the placement's determinant is +1 for all
+   eight facings; and none of the 17 397 bind matrices has a negative
+   determinant. The bind pose is a right-handed figure whose right side is −X,
+   so the marine's weapon (`M` under `Hand_R`) is drawn in the right hand. §5.3's
+   16× scale was closed by the same reading (`0x004a625c`, `0x0042c890`).
+
+7. ~~**How an external `Rotation matrix` movement combines with a part and a
+   playing clip.**~~ **Closed 2026-09-27** — §6.4, measured in the running
+   game (18/18 aims replayed, 6/6 clip steps per body): it is the part's whole
+   local rotation, the translation stays the animation's, a clip's own
+   rotation track cannot displace it (priority `0x65`), and it is relative to
+   the parent. `0x0042cd80`, its one caller pair, lands on the *parent* of the
+   part it names ([`22` §7.1](22-combat-and-visibility.md) step 5).
 
 ---
 

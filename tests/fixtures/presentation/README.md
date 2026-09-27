@@ -20,7 +20,7 @@ Reproduce with a **copy** of the game outside this repository, with
 ```bash
 python3 tools/presentation_gold.py --game-copy /path/to/copy \
     --dbgcall /path/to/copy/dbgcall.exe
-python3 tools/presentation_gold.py --check gog_incubation      # 741 checks
+python3 tools/presentation_gold.py --check gog_incubation      # 993 checks
 python3 tools/presentation_gold.py --emit-death-cases \
     tests/fixtures/presentation/cases_death.json --root gog_incubation
 ```
@@ -218,3 +218,56 @@ All three are `World_A00`'s `Level01d`, 30x30. Each phase reads the whole
 compares is every cell, not the one the command names.
 `aPlayCrushWallAnimation` itself is never called: everything after the mark
 renders.
+
+## The special-object table phases *(added 2026-09-26)*
+
+Five `land_table_*` phases read `[0x004FA80C]` and its count `[0x004FA7B4]`
+(the table `0x00406F20` searches, [`docs/20`](../../../docs/20-lcl-language.md)
+§7.4, item 12). None runs on `_6_.sav` alone: the capture **stages its own
+saves**, wrapping every shipped mission whose world set the installation
+carries -- all but `_I_001` -- into `_6_.sav`'s fixed blocks as
+`Work/Saves2/_{100 + i}_.sav`, `i` the mission's index in that sorted list
+(`sav_parse.wrap`, the `--wrap` above). They go into the copy, never the
+installation.
+
+| Phase | What it does |
+| --- | --- |
+| `land_table_loads` | `aLoadGame` on every staged mission, the count and the whole 9 900-byte table read after each. **A second load in one process can fault** (an `int3` inside the previous map's teardown -- the game never loads twice without leaving the mission), so the phase runs as many processes as it takes, keeps what landed before a fault and starts the next process on the mission that faulted; one that faults as a fresh process's first load would be listed in `faulted_first` (none did) |
+| `land_table_platform` | `_C_105`'s six `Platform` rides in script order, the centre cells' markers read first and the map and the table after each ride |
+| `land_table_platform_height` | the first ride again, its nine source cells written to height 1600 through the game's `memcpy` first -- the only way to see that the ride does not carry `+0x01`, every cell of both blocks being at 0 |
+| `land_table_footbridge` | `_C_107`'s `FootBridge (16,18,…)` as its wrapper calls it, `(16, 18, 30, 0)`, the command cell's marker read first |
+| `land_table_inserted` | on `_C_174`, `aInsertLandObject` of three `L016EH00` spores (headings 0, 700, 2348), one `L110EX00` hole and one `L022EH00` growth at five markers, each followed by `0x0042F410(record, 1, 0, 1)` with the whole map read either side |
+
+`aPlayPlatformSequence` and `aPlayFootBridgeSequence` animate inside the call
+(`dist · 10` frames plus twenty), so those phases raise `dbgcall`'s
+`--call-timeout` to 60 s (`run_plan`'s `call_timeout_ms`). `--check` pins,
+under `land.*`, `platform.*`, `platform_height.*`, `inserted.*` and
+`footbridge.*`: the count and records against every `.lev`, the one record
+each ride moves and by how much, the heights the ride leaves, the footprint
+of each inserted object (and `inclib.footprint`'s at all 4 096 headings), and
+the record `FootBridge` frees.
+
+## The body-aim phases *(added 2026-09-27)*
+
+Two phases measure `aAttackUnit`'s waist aim `0x0042CD80`
+([`docs/22`](../../../docs/22-combat-and-visibility.md) §7.1 step 5,
+[`docs/40`](../../../docs/40-charisma-model-animation.md) §6.4): `body_aim`
+on `_6_.sav`'s Sgt. Bratt (unit 3, type 23) and `body_aim_marine` on
+`_0_.sav`'s Rock (unit 3, type 0) -- **stage `tests/fixtures/saves/_0_.sav`
+as `Work/Saves2/_0_.sav`** in the copy as well. Each aims the body at nine
+targets (level ahead, level east, a field-and-a-half above and below, three
+bearings above, above ahead, nearly overhead) and per aim reads the movement
+it returns, the part the movement attached to and that part's parent, both
+world matrices before an update (the first is the unaimed control), one
+`Simulate`, the part again, and the release. After the last release one more
+step shows the bind back; then one more aim with the unit's `F` clip started
+over it (`fcn.004055E0(3, unit, 1)`), stepped six times.
+
+`--check` pins, under `aim.*`, `body_aim.*` and `body_aim_marine.*`: the
+constants and the call-site bytes; that every movement lands on the spine bone
+`Unterkoerper` hangs from, on rotation channel 1; the replay of every written
+matrix (18/18 within 1e-5); the local rotation after the update equal to it
+and the translation kept; the world rotation equal to the aim; the unaimed
+control and the 35.8° the level-ahead aim sits off it; the release; and the
+fight clip neither displacing the aim nor being stopped from moving the
+parent and the translation.

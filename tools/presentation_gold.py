@@ -69,12 +69,14 @@ is missing.
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import logging
+import math
 import struct
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -700,6 +702,286 @@ def crush_wall_plan(name: str) -> str:
 
 
 # --------------------------------------------------------------------------
+# The special-object table [0x004FA80C] -- docs/20 section 7.4, item 12
+# --------------------------------------------------------------------------
+
+#: The table and its count (`docs/10` §6.1-§6.2): `aLoadFile` reads the
+#: `.lev`'s 724-byte block 1 to `0x004FA528`, whose `+0x28C` is the count at
+#: `0x004FA7B4`, and its 150 x 66-byte block 2 to the buffer `[0x004FA80C]`
+#: points at (`0x00407C70`: `0x00404C70(0)` is `[0x004FA80C] + 0 * 66`).
+LAND_COUNT = 0x004FA7B4
+LAND_TABLE = 0x004FA80C
+LAND_SLOTS = 150
+LAND_RECORD = 66
+LAND_TABLE_BYTES = LAND_SLOTS * LAND_RECORD
+#: The record fields the checks compare: position, rotation and both joint
+#: triples (`+0x10`..`+0x32`) and the prototype letter and number
+#: (`+0x40`, `+0x41`).  `+0x00..+0x0F` are the runtime pointers, the
+#: prototype index the fix-up `0x00404D30` re-resolves and its handle.
+LAND_POSITION = 0x10
+LAND_AUTHORED = (slice(0x10, 0x32), slice(0x40, 0x42))
+#: Every mission is wrapped into `_6_.sav`'s fixed blocks and staged as
+#: `_{LAND_SLOT_BASE + i}_.sav`, `i` its index among the loadable missions.
+LAND_SLOT_BASE = 100
+#: Missions per process.  **A second `aLoadGame` in one process can fault**
+#: (an `int3`, `0x80000003`, inside the loader's teardown of the previous
+#: map -- the game itself never loads twice without leaving the mission
+#: first), so the capture keeps what landed before the fault and starts the
+#: next process on the mission that faulted.  A mission that faults as the
+#: **first** load of a fresh process is a failure of its own and is recorded,
+#: not retried.
+LAND_CHUNK = 20
+LAND_READS = (f" --read 0x{LAND_COUNT:x}:4"
+              f" --read [0x{LAND_TABLE:x}]:{LAND_TABLE_BYTES}")
+#: `Platform` `0x00412A00` and the box its search `0x00406F20` is asked with
+#: around the centre cell's marker (`push 0x1388` x3, `0x00412BE5`); every
+#: frame adds `dir * 0x140` to the found record's x or y (`0x00412D00`), for
+#: `dist * 10` frames -- `dist * 3200`, one field per tile.
+PLATFORM_MISSION = "_C_105"
+PLATFORM_CALLS = ((20, 10, 2, 4), (20, 14, 0, 4), (17, 17, 0, 7),
+                  (17, 10, 2, 7), (17, 20, 2, 6), (17, 26, 0, 6))
+PLATFORM_BOX = (0x1388, 0x1388, 0x1388)
+PLATFORM_STEP = {0: (0, -1), 1: (-1, 0), 2: (0, 1), 3: (1, 0)}
+#: A seven-tile ride is ninety frames inside one call (`dist * 10` plus the
+#: twenty `0x00412F2F` waits); the harness's own 5 s is too short for it.
+PLATFORM_CALL_TIMEOUT_MS = 60000
+#: `FootBridge (16,18,30,1)` -- `_C_107.lcl:76`, the one shipped call.  The
+#: wrapper `0x00442650` passes `(x, y, frames, 0)` once the head count is met;
+#: the routine searches `0x00406F20` around the **command cell's** marker
+#: (`0x00414C4F`: `cell[+0x05]`, `aGetSymbolObjectPtr`, box 5000 x3) and frees
+#: what it found (`aDeleteLand`, `0x00414F49`).
+FOOT_BRIDGE_MISSION = "_C_107"
+FOOT_BRIDGE_CALL = (16, 18, 30, 0)
+FOOT_BRIDGE_BOX = (0x1388, 0x1388, 0x1388)
+#: The objects the scripts insert at run time -- `FallingSpores`' spore under
+#: a heading from the effect stream (`0x004146D3`), `GroundUnit`'s hole
+#: (`0x0041237D`, heading 0) and `GrowingLand`'s growth (`0x00470064`) -- each
+#: inserted with `aInsertLandObject` `0x00404E30` at a cell's marker and then
+#: swept with `0x0042F410(object, 1, 0, 1)`, the mark `Spores` and `CrushWall`
+#: run on the object their search finds.  `_C_174` is the `World_H00`
+#: mission that drops the spores; `L110EX00` is in the shared `EX` set.
+INSERTED_MISSION = "_C_174"
+INSERTED_OBJECTS = (("L016EH00.3DI", (6, 6), 0),
+                    ("L016EH00.3DI", (10, 6), 700),
+                    ("L016EH00.3DI", (14, 6), 2348),
+                    ("L110EX00.3DI", (18, 6), 0),
+                    ("L022EH00.3DI", (22, 6), 0))
+INSERTED_MARK = (1, 0, 1)
+LAND_DECLARATIONS = CRUSH_WALL_DECLARATIONS + """\
+__cdecl i32 aPlayPlatformSequence(i32,i32,i32,i32)            = Incubation.exe+0x12a00
+__cdecl i32 aPlayFootBridgeSequence(i32,i32,i32,i32)          = Incubation.exe+0x14a70
+__cdecl i32 aInsertLandObject(str,i32,i32,i32,i32,i32,i32)    = Incubation.exe+0x4e30
+__cdecl ptr aGetSpecialObjectPtr(i32)                         = Incubation.exe+0x4c70
+"""
+#: The missions whose load faults even as a fresh process's first -- none
+#: is expected; a capture that finds one records it and this names it.
+LAND_LOAD_FAULTS: tuple[str, ...] = ()
+#: The height the platform-height phase writes into every source cell of the
+#: first ride (`_C_105`'s own are all 0, as are the destination's): 1600 is
+#: ten height levels, a value no cell of either block holds.
+PLATFORM_PROBE_HEIGHT = 1600
+LAND_PHASES = ("land_table_loads", "land_table_platform",
+               "land_table_platform_height", "land_table_footbridge",
+               "land_table_inserted")
+
+
+def land_missions(root: str | Path) -> list[str]:
+    """Every shipped mission whose world set the installation carries.
+
+    `_I_001` names `World_Z00`, which the release does not ship; the loader
+    has nothing to build it from, so it is the one `.lev` left out.
+    """
+    return list(_land_missions(str(Path(root).resolve())))
+
+
+@functools.lru_cache(maxsize=None)
+def _land_missions(root: str) -> tuple[str, ...]:
+    from inclib import lev as levmod
+    base = Path(root)
+    out: list[str] = []
+    for path in sorted((base / "Missions").glob("*.lev")):
+        bm = levmod.parse_lev(path.read_bytes(), str(path))
+        if (base / "WorldSet" / f"World_{bm.world_set}").is_dir():
+            out.append(path.stem)
+    return tuple(out)
+
+
+def land_slot(root: str | Path, mission: str) -> int:
+    return LAND_SLOT_BASE + land_missions(root).index(mission)
+
+
+def land_map(root: str | Path, mission: str) -> Any:
+    from inclib import lev as levmod
+    path = Path(root) / "Missions" / f"{mission}.lev"
+    return levmod.parse_lev(path.read_bytes(), str(path))
+
+
+def stage_land_saves(game_copy: Path) -> None:
+    """Wrap every loadable mission into `_6_.sav`'s fixed blocks, once."""
+    import sav_parse
+    save = game_copy / "Work" / "Saves2" / f"_{gold.CAPTURE_SLOT}_.sav"
+    for mission in land_missions(game_copy):
+        out = game_copy / "Work" / "Saves2" / \
+            f"_{land_slot(game_copy, mission)}_.sav"
+        if not out.is_file():
+            sav_parse.wrap(save, game_copy / "Missions" / f"{mission}.lev", out)
+
+
+def land_load_plan(root: str | Path, missions: list[str]) -> str:
+    """Load missions one after another, the table read after each."""
+    lines = ["# land_table_loads: the table as each load leaves it",
+             LAND_DECLARATIONS.rstrip("\n"), "aSetSaveMode(0)"]
+    for mission in missions:
+        lines.append(f"aLoadGame({land_slot(root, mission)}){LAND_READS}")
+    return "\n".join(lines) + "\n"
+
+
+def capture_land_loads(game_copy: Path, dbgcall: Path,
+                       phase: dict[str, Any], attempts: int,
+                       save: Any) -> None:
+    """Run processes until every loadable mission has landed or faulted first.
+
+    *phase* is ``{"rows": [...], "faulted_first": [...]}`` and is extended in
+    place; *save* writes the document after every process, so an interrupted
+    capture resumes where it stopped.
+    """
+    rows: list[dict[str, Any]] = phase.setdefault("rows", [])
+    faulted: list[str] = phase.setdefault("faulted_first", [])
+    by_slot = {land_slot(game_copy, m): m for m in land_missions(game_copy)}
+    done = {by_slot.get(int(r["args"][0])) for r in rows
+            if r.get("call") == "aLoadGame"}
+    pending = [m for m in land_missions(game_copy)
+               if m not in done and m not in faulted]
+    while pending:
+        batch = pending[:LAND_CHUNK]
+        name = "pres_land_table_loads"
+        try:
+            gold.run_plan(game_copy, dbgcall, land_load_plan(game_copy, batch),
+                          name, attempts=attempts)
+        except gold.CaptureError as err:
+            # "some calls failed" still leaves the rows before the fault; an
+            # anchor never reached leaves none, and the loop tries again.
+            LOG.warning("land_table_loads: %s", err)
+        out = game_copy / f"{name}.jsonl"
+        # `run_plan` removes the previous attempt's file before each launch,
+        # so what is here is this process's.
+        got = ([json.loads(line) for line in out.read_text().splitlines()
+                if line.strip()] if out.is_file() else [])
+        landed = [r for r in got if r.get("call") == "aLoadGame"
+                  and r.get("status") == "ok"]
+        fault = next((r for r in got if r.get("call") == "aLoadGame"
+                      and r.get("status") != "ok"), None)
+        if not landed and fault is None:
+            LOG.error("land_table_loads: a process landed nothing; stopping "
+                      "with %d pending -- re-run to resume", len(pending))
+            break
+        rows.extend(landed)
+        for r in landed:
+            pending.remove(by_slot[int(r["args"][0])])
+        if fault is not None:
+            mission = by_slot[int(fault["args"][0])]
+            if mission == batch[0]:
+                LOG.error("land_table_loads: %s faults as a first load: %s",
+                          mission, fault.get("detail"))
+                faulted.append(mission)
+                pending.remove(mission)
+            else:
+                pending.remove(mission)
+                pending.insert(0, mission)
+        LOG.info("land_table_loads: %d landed, %d pending, %d faulted first",
+                 len(rows), len(pending), len(faulted))
+        save()
+
+
+def _symbol_line(name: str, bm: Any, x: int, y: int) -> str:
+    return (f"{name} = aGetSymbolObjectPtr({y * bm.width + x})"
+            f" --read ${name}:{blob_gold.SYMBOL_RECORD_BYTES}")
+
+
+def land_platform_plan(root: str | Path) -> str:
+    """`_C_105`'s six rides, in script order, the table read after each."""
+    bm = land_map(root, PLATFORM_MISSION)
+    cells = bm.width * bm.height * gold.CELL_STRIDE
+    lines = ["# land_table_platform: does the ride move its table record?",
+             LAND_DECLARATIONS.rstrip("\n"), "aSetSaveMode(0)",
+             f"loaded = aLoadGame({land_slot(root, PLATFORM_MISSION)})",
+             f"c0 = aGetCtrlMapElementPtr(0,0) --read $c0:{cells}{LAND_READS}"]
+    for i, (x, y, _d, _n) in enumerate(PLATFORM_CALLS):
+        lines.append(_symbol_line(f"s{i}", bm, x, y))
+    for x, y, d, n in PLATFORM_CALLS:
+        lines.append(f"aPlayPlatformSequence({x}, {y}, {d}, {n})"
+                     f" --read $c0:{cells}{LAND_READS}")
+    return "\n".join(lines) + "\n"
+
+
+def land_platform_height_plan(root: str | Path) -> str:
+    """The first ride again, its source block first raised to 1600.
+
+    `docs/20` §7.4 step 4 said the ride copies "object/height/type"; the
+    copy loop at `0x00413011` moves `+0x0D`, `+0x0E`, `+0x0F` and `+0x10`
+    and nothing at `+0x01`.  Every cell of both `_C_105` blocks is at 0, so
+    `land_table_platform` cannot tell the two readings apart; this can.
+    """
+    bm = land_map(root, PLATFORM_MISSION)
+    cells = bm.width * bm.height * gold.CELL_STRIDE
+    x, y, d, n = PLATFORM_CALLS[0]
+    lines = ["# land_table_platform_height: is the height carried?",
+             LAND_DECLARATIONS.rstrip("\n"),
+             f"--blob h:{struct.pack('<i', PLATFORM_PROBE_HEIGHT).hex()}",
+             "aSetSaveMode(0)",
+             f"loaded = aLoadGame({land_slot(root, PLATFORM_MISSION)})",
+             "c0 = aGetCtrlMapElementPtr(0,0)"]
+    for ox in (-1, 0, 1):
+        for oy in (-1, 0, 1):
+            index = (y + oy) * bm.width + x + ox
+            lines.append(f"memcpy($c0+0x{index * gold.CELL_STRIDE + CELL_HEIGHT:x},"
+                         f" &h, 4)")
+    lines += [f"aGetCtrlMapElementPtr(0,0) --read $c0:{cells}",
+              f"aPlayPlatformSequence({x}, {y}, {d}, {n})"
+              f" --read $c0:{cells}{LAND_READS}"]
+    return "\n".join(lines) + "\n"
+
+
+def land_footbridge_plan(root: str | Path) -> str:
+    """`_C_107`'s `FootBridge`, the command cell's marker read first."""
+    bm = land_map(root, FOOT_BRIDGE_MISSION)
+    cells = bm.width * bm.height * gold.CELL_STRIDE
+    x, y = FOOT_BRIDGE_CALL[:2]
+    args = ", ".join(str(v) for v in FOOT_BRIDGE_CALL)
+    return "\n".join([
+        "# land_table_footbridge: which record does the collapse free?",
+        LAND_DECLARATIONS.rstrip("\n"), "aSetSaveMode(0)",
+        f"loaded = aLoadGame({land_slot(root, FOOT_BRIDGE_MISSION)})",
+        f"c0 = aGetCtrlMapElementPtr(0,0) --read $c0:{cells}{LAND_READS}",
+        _symbol_line("s", bm, x, y),
+        f"aPlayFootBridgeSequence({args}) --read $c0:{cells}{LAND_READS}",
+    ]) + "\n"
+
+
+def land_inserted_plan(root: str | Path) -> str:
+    """Insert each run-time object at a marker and sweep its footprint."""
+    bm = land_map(root, INSERTED_MISSION)
+    cells = bm.width * bm.height * gold.CELL_STRIDE
+    mark = ", ".join(str(v) for v in INSERTED_MARK)
+    lines = ["# land_table_inserted: the footprint of a run-time object",
+             LAND_DECLARATIONS.rstrip("\n"), "aSetSaveMode(0)",
+             f"loaded = aLoadGame({land_slot(root, INSERTED_MISSION)})",
+             f"c0 = aGetCtrlMapElementPtr(0,0) --read $c0:{cells}{LAND_READS}"]
+    for i, (model, (x, y), heading) in enumerate(INSERTED_OBJECTS):
+        lines += [
+            _symbol_line(f"s{i}", bm, x, y),
+            f'aInsertLandObject("{model}", [$s{i}+0x10], [$s{i}+0x14],'
+            f" [$s{i}+0x18], 0, 0, {heading}){LAND_READS}",
+            # The record just appended: `0x00404C70(count - 1)`, the count
+            # being the `.lev`'s own plus the inserts so far.
+            f"r{i} = aGetSpecialObjectPtr({len(bm.special) + i})"
+            f" --read $r{i}:{LAND_RECORD}",
+            f"aMarkCellsUnderObject($r{i}, {mark}) --read $c0:{cells}",
+        ]
+    return "\n".join(lines) + "\n"
+
+
+# --------------------------------------------------------------------------
 # The jump scream's draw -- docs/42 §7.1, docs/97 §31.8
 # --------------------------------------------------------------------------
 
@@ -805,11 +1087,170 @@ def frame_limiter_plan() -> str:
     return "\n".join(lines) + "\n"
 
 
+# --------------------------------------------------------------------------
+# The body aim -- docs/22 §7.1 step 5, docs/40 §6.3
+# --------------------------------------------------------------------------
+
+#: `aAttackUnit`'s lower-body aim `0x0042CD80(model, String *name, tx, ty,
+#: tz)`, cdecl (`add esp, 0x14` at `0x0046B89F`), called with the literal
+#: `"Unterkoerper"` at `0x004CC660`.  It returns the `ExternalRotationMovement`
+#: it installed (`0x00495C99`, priority `0x65`), whose matrix is at `+0x44`
+#: (`0x00495A53`); `0x004960F5(model, movement)` is the release at
+#: `0x0046C1C7`.
+AIM = 0x0042CD80
+AIM_RELEASE = 0x004960F5
+AIM_PART_NAME = 0x004CC660
+AIM_MOVEMENT_BYTES = 0x90
+AIM_MOVEMENT_MATRIX = 0x44
+#: `BB::String::String(const char *, int)`, through its IAT slot.
+STRING_CTOR_SLOT = 0x00525714
+#: `StdPart::GetWorldMatrix` `0x0049DB84`, whose `this` is the part's
+#: `StdPart` base at `+0xDC`: the bind matrix at `this - 0xAC` (`+0x30`),
+#: the current local at `this - 0x6C` (`+0x70`), the parent at `this - 0xB4`
+#: (`+0x28`) -- a pointer to the parent's `+0x160` interface.
+GET_WORLD = 0x0049DB84
+PART_STDPART = 0xDC
+PART_PARENT = 0x28
+PART_BIND = 0x30
+PART_LOCAL = 0x70
+PART_PARENT_INTERFACE = 0x160
+#: The rotation slot of `V100Part::Update` (`0x004A6807`): channel 1.
+ROTATION_CHANNEL = 1
+#: `V100Model`'s placement: `0x0049E4B8` (vtable `0x004B21A4` slot 0, reached
+#: from `0x0042CD80` as `[[model + 4 + vbase] + 0]`) copies it from `+0x34`.
+MODEL_PLACEMENT = 0x34
+V100_MODEL_BYTES = 0xE0
+#: `fcn.004055E0(slot, unit, kind)`: kind 1 is the `F` clip at speed 6.0,
+#: slot 3 the one `aPlayFightAnimation` uses (`0x0040BE88`).
+START_ANIMATION = 0x004055E0
+FIGHT_SLOT = 3
+FIGHT_KIND = 1
+FIGHT_STEPS = 6
+#: The constants the aim reads (`0x0042CF7B` .. `0x0042CFB4`): pi, the two
+#: angles and 1/180, and the world-to-Charisma scale 1/16 (`0x0042CF09`).
+AIM_PI = 0x004B1320
+AIM_ANGLE_X = 0x004B1370
+AIM_ANGLE_Y = 0x004B1378
+AIM_DEGREE = 0x004B1358
+AIM_SCALE = 0x004B1334
+
+
+class BodyAimCase(NamedTuple):
+    """One unit of one save to aim, and where its object stands."""
+    save_slot: int
+    unit_slot: int
+    object_id: int
+    origin: tuple[int, int, int]
+    forward: tuple[int, int]
+
+
+#: `_6_.sav` carries one class-1 body, Sgt. Bratt (type 23, facing 6);
+#: `_0_.sav` (`_C_140`) adds a marine, Rock (type 0, facing 0).  The origin
+#: is the object record's `+0x10` triple, which the check re-reads.
+BODY_AIM_CASES = {
+    "body_aim": BodyAimCase(6, 3, 3, (6400, 0, 160), (11314, 11314)),
+    "body_aim_marine": BodyAimCase(0, 3, 3, (57600, 6400, 160), (0, 16000)),
+}
+#: Each target as an offset from the object, `"forward"` standing for the
+#: body's own forward (docs/40 §5.4's step for its facing) at 16000 units.
+AIM_TARGETS: tuple[tuple[str, tuple[Any, Any, int]], ...] = (
+    ("level_forward", ("forward", None, 0)),
+    ("level_east", (16000, 0, 0)),
+    ("above_east", (16000, 0, 9600)),
+    ("below_east", (16000, 0, -9600)),
+    ("above_north", (0, 16000, 9600)),
+    ("above_west", (-16000, 0, 9600)),
+    ("above_southwest", (-11314, -11314, 9600)),
+    ("above_forward", ("forward", None, 9600)),
+    ("overhead", (160, 0, 32000)),
+)
+#: The target the fight-clip run aims at before the clip starts.
+AIM_CLIP_TARGET = "above_forward"
+
+BODY_AIM_DECLARATIONS = DECLARATIONS + f"""\
+{blob_gold.MEMCPY_DECL}
+__thiscall ptr StringNew(ptr,ptr,i32)       = [{STRING_CTOR_SLOT:#x}]
+__cdecl ptr  aAimBody(ptr,ptr,i32,i32,i32)  = Incubation.exe+0x{AIM - 0x400000:x}
+__cdecl void aReleaseAim(ptr,ptr)           = Incubation.exe+0x{AIM_RELEASE - 0x400000:x}
+__thiscall ptr GetWorldMatrix(ptr,ptr)      = Incubation.exe+0x{GET_WORLD - 0x400000:x}
+__cdecl i32  aStartAnimation(i32,ptr,i32)   = Incubation.exe+0x{START_ANIMATION - 0x400000:x}
+"""
+
+
+def aim_target(case: BodyAimCase, spec: tuple[Any, Any, int]) -> tuple[int, int, int]:
+    """A target's absolute engine position for *case*."""
+    ox, oy, oz = case.origin
+    dx, dy, dz = spec
+    if dx == "forward":
+        dx, dy = case.forward
+    return ox + dx, oy + dy, oz + dz
+
+
+def body_aim_plan(name: str) -> str:
+    """Aim the case's body at every target, reading what the aim wrote.
+
+    Per target: the aim, the part it attached to and that part's parent,
+    both world matrices before any update (so the first is the unaimed
+    control), one `Simulate`, the part again, then the release.  After the
+    last, one more step shows the bind rotation back.  Then the aim once more
+    with the fight clip started over it, stepped `FIGHT_STEPS` times.
+    """
+    case = BODY_AIM_CASES[name]
+    def world(part: str, buf: str) -> str:
+        return f"GetWorldMatrix(${part}+0x{PART_STDPART:x}, &{buf}) --dump {buf}"
+
+    buffers = ["--buf name:8"]
+    lines = [
+        f"# {name}: 0x0042CD80 on unit {case.unit_slot} of save {case.save_slot}.",
+        BODY_AIM_DECLARATIONS.rstrip("\n"),
+    ]
+    body = [
+        "aSetSaveMode(0)",
+        f"loaded = aLoadGame({case.save_slot})",
+        f"u = aGetUnitMapElementPtr({case.unit_slot}) --read $u:{UNIT_STRIDE}",
+        f"o = aGetObjectRecord({case.object_id}) --read $o:{OBJECT_STRIDE}",
+        f"m = memcpy([$o+0x{OBJECT_MODEL:x}], [$o+0x{OBJECT_MODEL:x}], 0)"
+        f" --read $m:0x{V100_MODEL_BYTES:x}",
+        f"s = StringNew(&name, 0x{AIM_PART_NAME:x}, 1) --dump name",
+    ]
+
+    def aim(k: int, target: tuple[int, int, int]) -> list[str]:
+        tx, ty, tz = target
+        return [
+            f"a{k} = aAimBody($m, &name, {tx}, {ty}, {tz}) --read $a{k}:0x{AIM_MOVEMENT_BYTES:x}",
+            f"p{k} = memcpy([$a{k}+0x{MOVEMENT_CHANNEL:x}]-0x{PART_CHANNEL_INTERFACE:x},"
+            f" [$a{k}+0x{MOVEMENT_CHANNEL:x}]-0x{PART_CHANNEL_INTERFACE:x}, 0)"
+            f" --read $p{k}:0x{PART_STRIDE:x}",
+            f"q{k} = memcpy([$p{k}+0x{PART_PARENT:x}]-0x{PART_PARENT_INTERFACE:x},"
+            f" [$p{k}+0x{PART_PARENT:x}]-0x{PART_PARENT_INTERFACE:x}, 0)"
+            f" --read $q{k}:0x{PART_STRIDE:x}",
+        ]
+
+    for k, (_label, spec) in enumerate(AIM_TARGETS):
+        buffers += [f"--buf pre{k}:64", f"--buf par{k}:64", f"--buf post{k}:64"]
+        body += aim(k, aim_target(case, spec))
+        body += [world(f"p{k}", f"pre{k}"), world(f"q{k}", f"par{k}"), SIMULATE,
+                 world(f"p{k}", f"post{k}") + f" --read $p{k}:0x{PART_STRIDE:x}",
+                 f"aReleaseAim($m, $a{k})"]
+    buffers.append("--buf bind:64")
+    body += [SIMULATE, world("p0", "bind") + f" --read $p0:0x{PART_STRIDE:x}"]
+    k = len(AIM_TARGETS)
+    spec = dict(AIM_TARGETS)[AIM_CLIP_TARGET]
+    body += aim(k, aim_target(case, spec))
+    body.append(f"f = aStartAnimation({FIGHT_SLOT}, $u, {FIGHT_KIND})")
+    for j in range(FIGHT_STEPS):
+        buffers += [f"--buf clip{j}:64", f"--buf clippar{j}:64"]
+        body += [SIMULATE, world(f"p{k}", f"clip{j}") + f" --read $p{k}:0x{PART_STRIDE:x}",
+                 world(f"q{k}", f"clippar{j}")]
+    body += [f"aReleaseAim($m, $a{k})", f"freed = aFreeCHAnimation({FIGHT_SLOT})"]
+    return "\n".join(lines + buffers + body) + "\n"
+
+
 PLAN_NAMES = ("idle_random", "idle_pose", "jump_scream", "frame_limiter",
               "deaths_state") + tuple(
     "death_" + name for name, _c, _a, _s in DEATH_CALLS) \
     + tuple(SPECIAL_CALLS) + tuple(SPECIAL_D00_CALLS) \
-    + tuple(crush_wall_sites())
+    + tuple(crush_wall_sites()) + LAND_PHASES + tuple(BODY_AIM_CASES)
 
 
 # --------------------------------------------------------------------------
@@ -1253,6 +1694,249 @@ def limiter_trace(rows: list[dict[str, Any]]) -> list[tuple[int, int, int]]:
     return out
 
 
+def _mat(raw: bytes, offset: int = 0) -> list[float]:
+    """Sixteen floats, row-major and applied as `M * v` (docs/40 §5.1)."""
+    return list(struct.unpack_from("<16f", raw, offset))
+
+
+def _rotation(m: list[float]) -> list[float]:
+    """*m* with its translation column cleared -- `0x004828C1`."""
+    return charisma.mat_with_translation(m, (0.0, 0.0, 0.0))
+
+
+def _inverse_rotation(m: list[float]) -> list[float]:
+    """The inverse of a translation-free affine matrix -- `0x00482B36`.
+
+    A general 3x3 inverse by cofactors, not a transpose: bone matrices carry
+    scale (docs/40 §5.1).
+    """
+    a, b, c, d, e, f, g, h, i = m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10]
+    det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g)
+    cof = ((e * i - f * h), -(b * i - c * h), (b * f - c * e),
+           -(d * i - f * g), (a * i - c * g), -(a * f - c * d),
+           (d * h - e * g), -(a * h - b * g), (a * e - b * d))
+    out = charisma.mat_identity()
+    for r in range(3):
+        for col in range(3):
+            out[r * 4 + col] = cof[r * 3 + col] / det
+    return out
+
+
+def _normalised(v: tuple[float, float, float]) -> tuple[float, float, float]:
+    """`0x0048262C`: a zero vector becomes `(1, 0, 0)`."""
+    n = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]) ** 0.5
+    return (1.0, 0.0, 0.0) if n == 0.0 else (v[0] / n, v[1] / n, v[2] / n)
+
+
+def _cross(a: tuple[float, ...], b: tuple[float, ...]) -> tuple[float, float, float]:
+    """`0x00482695`."""
+    return (a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
+
+
+def _axis_rotation(axis: int, degrees: float) -> list[float]:
+    """`Rx` (`0x00482920`) or `Ry` (`0x00482991`), post-multiplied."""
+    c, s = math.cos(math.radians(degrees)), math.sin(math.radians(degrees))
+    out = charisma.mat_identity()
+    if axis == 0:
+        out[5], out[6], out[9], out[10] = c, -s, s, c
+    else:
+        out[0], out[2], out[8], out[10] = c, s, -s, c
+    return out
+
+
+def aim_matrices(placement: list[float], parent_world: list[float], local: list[float],
+                 target: tuple[int, int, int], angle_x: float, angle_y: float,
+                 scale: float) -> tuple[list[float], list[float]]:
+    """`0x0042CD80`'s arithmetic: `(matrix it writes, world rotation it means)`.
+
+    *placement* is the model's (`+0x34`), *parent_world* the aimed part's
+    parent's Charisma-space world matrix, *local* the aimed part's current
+    local matrix.  The pivot is `placement * parent_world * T(local)`; the
+    look-at `0x0042CBA0` writes the columns `side = d x z`, `d`, `up = side x
+    d`; the matrix written is that frame taken back into the parent.
+    """
+    pivot = charisma.mat_translation(charisma.mat_mul(
+        charisma.mat_mul(placement, parent_world),
+        charisma.mat_with_translation(charisma.mat_identity(),
+                                      charisma.mat_translation(local))))
+    aim = tuple(float(t) * scale for t in target)
+    d = _normalised((aim[0] - pivot[0], aim[1] - pivot[1], aim[2] - pivot[2]))
+    side = _normalised(_cross(d, (0.0, 0.0, 1.0)))
+    up = _normalised(_cross(side, d))
+    frame = charisma.mat_identity()
+    for column, v in enumerate((side, d, up)):
+        frame[column], frame[4 + column], frame[8 + column] = v
+    world = charisma.mat_mul(charisma.mat_mul(frame, _axis_rotation(0, angle_x)),
+                             _axis_rotation(1, angle_y))
+    written = charisma.mat_mul(_inverse_rotation(_rotation(parent_world)),
+                               charisma.mat_mul(_inverse_rotation(_rotation(placement)),
+                                                world))
+    return written, world
+
+
+def _max_diff(a: list[float], b: list[float]) -> float:
+    return max(abs(x - y) for x, y in zip(a, b))
+
+
+def _angle_between(a: list[float], b: list[float]) -> float:
+    """Degrees between two rotation matrices' 3x3 parts."""
+    trace = sum(a[r * 4 + k] * b[r * 4 + k] for r in range(3) for k in range(3))
+    return math.degrees(math.acos(max(-1.0, min(1.0, (trace - 1.0) / 2.0))))
+
+
+#: The tolerance the replay is held to: the engine computes in x87 and stores
+#: `float`; 1e-5 is two orders above the largest difference measured.
+AIM_TOLERANCE = 1e-5
+#: The named part and the one the movement actually lands on (docs/22 §7.1).
+AIM_NAMED_PART = "Unterkoerper"
+#: Measured: the aimed spine against its unaimed bind for the level target
+#: straight ahead, on both bodies -- a quarter-turn-sized correction it is
+#: not; see docs/22 §7.1 step 5.
+AIM_LEVEL_FORWARD_DEGREES = 35.8
+AIM_LEVEL_FORWARD_SLACK = 0.5
+#: Call-site bytes the phase leans on: the priority push, and the literal's
+#: push at both `aAttackUnit` sites.
+AIM_PRIORITY_SITE = 0x0042CE0A
+AIM_PRIORITY_BYTES = bytes.fromhex("6a65")
+AIM_NAME_SITES = (0x0046B85A, 0x0046B8EE)
+
+
+def _aim_inputs(rows: list[dict[str, Any]], k: int
+                ) -> tuple[list[float], list[float], bytes, bytes]:
+    """Target *k*'s capture: `(written, parent_world, part_pre, part_post)`."""
+    written = _mat(_reads_named(rows, f"$a{k}")[0], AIM_MOVEMENT_MATRIX)
+    part_pre, part_post = _reads_named(rows, f"$p{k}")[:2]
+    parent_world = _mat(_reads_named(rows, f"par{k}")[0])
+    return written, parent_world, part_pre, part_post
+
+
+def _reads_named(rows: list[dict[str, Any]], key: str) -> list[bytes]:
+    return [_hex_bytes(v) for row in rows for k, v in (row.get("reads") or {}).items()
+            if k == key]
+
+
+def check_body_aim(ck: Checker, root: str, phases: dict[str, Any]) -> None:
+    pe = PEFile(str(Path(root) / "Incubation.exe"))
+    angle_x = pe.f64(AIM_ANGLE_X)
+    angle_y = pe.f64(AIM_ANGLE_Y)
+    scale = struct.unpack("<f", pe.bytes_at(AIM_SCALE, 4))[0]
+    ck.pin("aim.constants", (angle_x, angle_y, scale) == (-15.5, -90.0, 0.0625)
+           and abs(pe.f64(AIM_PI) - 3.1415926535) < 1e-12
+           and abs(pe.f64(AIM_DEGREE) - 1 / 180) < 1e-15,
+           str((angle_x, angle_y, scale)))
+    ck.pin("aim.priority_push", pe.bytes_at(AIM_PRIORITY_SITE, 2) == AIM_PRIORITY_BYTES,
+           pe.bytes_at(AIM_PRIORITY_SITE, 2).hex())
+    ck.pin("aim.name_literal",
+           pe.cstring(AIM_PART_NAME) == AIM_NAMED_PART
+           and all(pe.bytes_at(site, 5) == b"\x68" + struct.pack("<I", AIM_PART_NAME)
+                   for site in AIM_NAME_SITES), pe.cstring(AIM_PART_NAME))
+    replayed = 0
+    for name, case in BODY_AIM_CASES.items():
+        rows = (phases.get(name) or {}).get("rows")
+        ck.pin(f"{name}.captured", bool(rows), "phase missing -- re-take it")
+        if not rows:
+            continue
+        ck.pin(f"{name}.rows_all_ok", all(r.get("status") == "ok" for r in rows),
+               str([r for r in rows if r.get("status") != "ok"][:3]))
+        unit = _reads_named(rows, "$u")[0]
+        obj = _reads_named(rows, "$o")[0]
+        ck.pin(f"{name}.origin", struct.unpack_from("<3i", obj, 0x10) == case.origin,
+               str(struct.unpack_from("<3i", obj, 0x10)))
+        placement = _mat(_reads_named(rows, "$m")[0], MODEL_PLACEMENT)
+        key = SelectorKey(unit[UNIT_TYPE], unit[UNIT_WEAPON], unit[UNIT_PLAYER])
+        tables = SelectorTables(pe, [key])
+        model_name = tables.lookup("model", key)[0].name
+        nodes = charisma.parse_model_file(
+            str(Path(root) / "CHData" / "Objects" / f"{model_name}.cho")).skeleton.nodes
+        named = next(n for n in nodes if n.name == AIM_NAMED_PART)
+        aimed = next(n for n in nodes if n.name == named.parent)
+        grand = next(n for n in nodes if n.name == aimed.parent)
+
+        def node_of(part: bytes) -> str | None:
+            bind = _mat(part, PART_BIND)
+            hits = [n.name for n in nodes if _max_diff(list(n.matrix), bind) < 1e-6]
+            return hits[0] if len(hits) == 1 else None
+
+        movements = [int(r["eax"], 16) for r in rows if r.get("call") == "aAimBody"]
+        n = len(AIM_TARGETS)
+        lands, parent_ok, channel, replay, local_rot, kept, world_ok = ([] for _ in range(7))
+        for k, (label, spec) in enumerate(AIM_TARGETS):
+            movement = _reads_named(rows, f"$a{k}")[0]
+            written, parent_world, part_pre, part_post = _aim_inputs(rows, k)
+            parent = _reads_named(rows, f"$q{k}")[0]
+            post_world = _mat(_reads_named(rows, f"post{k}")[0])
+            lands.append(node_of(part_pre) == aimed.name)
+            parent_ok.append(node_of(parent) == grand.name)
+            channel.append(struct.unpack_from("<I", movement, MOVEMENT_CHANNEL_INDEX)[0]
+                           == ROTATION_CHANNEL and struct.unpack_from(
+                               "<I", part_post, PART_CHANNELS + 4 * ROTATION_CHANNEL)[0]
+                           == movements[k])
+            predicted, world = aim_matrices(placement, parent_world, _mat(part_pre, PART_LOCAL),
+                                            aim_target(case, spec), angle_x, angle_y, scale)
+            replay.append(_max_diff(predicted, written) < AIM_TOLERANCE)
+            local = _mat(part_post, PART_LOCAL)
+            local_rot.append(_rotation(local) == _rotation(written))
+            kept.append(charisma.mat_translation(local)
+                        == charisma.mat_translation(_mat(part_pre, PART_LOCAL)))
+            world_ok.append(_max_diff(_rotation(charisma.mat_mul(placement, post_world)),
+                                      world) < AIM_TOLERANCE)
+            if label == "level_forward":
+                unaimed = charisma.mat_mul(parent_world, _mat(part_pre, PART_BIND))
+                ck.pin(f"{name}.control_is_bind",
+                       _max_diff(unaimed, _mat(_reads_named(rows, f"pre{k}")[0]))
+                       < AIM_TOLERANCE, "pre-update world is not parent * bind")
+                degrees = _angle_between(_rotation(charisma.mat_mul(placement, unaimed)), world)
+                ck.pin(f"{name}.level_forward_off_bind",
+                       abs(degrees - AIM_LEVEL_FORWARD_DEGREES) < AIM_LEVEL_FORWARD_SLACK,
+                       f"{degrees:.2f} degrees")
+        for label, flags in (("lands_on_parent_of_named_part", lands),
+                             ("parent_world_is_its_parent", parent_ok),
+                             ("rotation_channel", channel),
+                             ("replay_matches", replay),
+                             ("local_rotation_is_written_matrix", local_rot),
+                             ("translation_kept", kept),
+                             ("world_rotation_is_aim", world_ok)):
+            ck.pin(f"{name}.{label}", all(flags), f"{sum(flags)}/{n}")
+        replayed += sum(replay)
+        # The release: one step later the part is back on its bind.
+        after = _reads_named(rows, "$p0")[-1]
+        ck.pin(f"{name}.release_restores_bind",
+               _mat(after, PART_LOCAL) == _mat(after, PART_BIND), "local != bind")
+        # The fight clip over the aim: its own track on the aimed part never
+        # displaces the external movement, its position track still applies,
+        # and the parent it moves carries the aimed part with it.
+        fight = next((r for r in rows if r.get("call") == "aStartAnimation"), None)
+        ck.pin(f"{name}.fight_clip_started", fight is not None and fight.get("result") == "1",
+               str(fight and fight.get("result")))
+        clip_name = tables.lookup("fire", key)[0].name
+        clip = charisma.parse_animation_file(
+            str(Path(root) / "CHData" / "Animations" / f"{clip_name}.cha"))
+        ck.pin(f"{name}.fight_clip_has_rotation_on_aimed_part",
+               any(m.desc_class == "LinearRotationMovementDesc" and m.target == aimed.name
+                   for m in clip.movements), clip_name)
+        k = n
+        clip_written = _mat(_reads_named(rows, f"$a{k}")[0], AIM_MOVEMENT_MATRIX)
+        clip_parts = _reads_named(rows, f"$p{k}")[1:]
+        clip_parents = [_mat(_reads_named(rows, f"clippar{j}")[0]) for j in range(FIGHT_STEPS)]
+        held = [struct.unpack_from("<I", part, PART_CHANNELS + 4 * ROTATION_CHANNEL)[0]
+                == movements[k] and _rotation(_mat(part, PART_LOCAL)) == _rotation(clip_written)
+                for part in clip_parts]
+        ck.pin(f"{name}.fight_clip_keeps_the_aim", len(held) == FIGHT_STEPS and all(held),
+               f"{sum(held)}/{FIGHT_STEPS}")
+        ck.pin(f"{name}.fight_clip_moves_parent_and_translation",
+               _max_diff(clip_parents[0], clip_parents[-1]) > 1e-3
+               and charisma.mat_translation(_mat(clip_parts[0], PART_LOCAL))
+               != charisma.mat_translation(_mat(clip_parts[-1], PART_LOCAL)),
+               "the clip moved nothing")
+        follows = [_max_diff(_mat(_reads_named(rows, f"clip{j}")[0]),
+                             charisma.mat_mul(clip_parents[j], _mat(clip_parts[j], PART_LOCAL)))
+                   < AIM_TOLERANCE for j in range(FIGHT_STEPS)]
+        ck.pin(f"{name}.fight_clip_world_is_parent_times_local", all(follows),
+               f"{sum(follows)}/{FIGHT_STEPS}")
+    ck.pin("aim.replayed_total", replayed == len(AIM_TARGETS) * len(BODY_AIM_CASES),
+           f"{replayed}/{len(AIM_TARGETS) * len(BODY_AIM_CASES)}")
+
+
 def check_limiter(ck: Checker, root: str, rows: list[dict[str, Any]]) -> None:
     """The skip controller's epoch rule, measured."""
     ck.pin("limiter.rows_all_ok", all(r.get("status") == "ok" for r in rows),
@@ -1640,6 +2324,42 @@ def _death_constant_discriminated(name: str, state: list[dict[str, Any]],
                               type_models) != base
     finally:
         setattr(blob_creators, name, was)
+
+
+AIM_CASES_SCHEMA = "incubation.aim-cases/1"
+
+
+def emit_aim_cases(path: Path, out: Path) -> int:
+    """`0x0042CD80`'s captured inputs and the matrix it wrote, per target.
+
+    `godot/tests/test_charisma.gd` replays each through `AttackAim.spine_local`
+    and holds it to :data:`AIM_TOLERANCE` against the engine's own matrix --
+    the capture, not :func:`aim_matrices`, is the oracle.
+    """
+    if not path.is_file():
+        LOG.error("%s: no capture; take one with --game-copy", path)
+        return 1
+    phases = json.loads(path.read_text(encoding="utf-8")).get("phases") or {}
+    cases: list[dict[str, Any]] = []
+    for name, case in BODY_AIM_CASES.items():
+        rows = (phases.get(name) or {}).get("rows")
+        if not rows:
+            LOG.error("%s: phase missing -- re-take the capture", name)
+            return 1
+        placement = _mat(_reads_named(rows, "$m")[0], MODEL_PLACEMENT)
+        for k, (label, spec) in enumerate(AIM_TARGETS):
+            written, parent_world, part_pre, _post = _aim_inputs(rows, k)
+            cases.append({"phase": name, "label": label,
+                          "placement": placement, "parent_world": parent_world,
+                          "local": _mat(part_pre, PART_LOCAL),
+                          "target": list(aim_target(case, spec)),
+                          "written": written})
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps({"schema": AIM_CASES_SCHEMA,
+                               "tolerance": AIM_TOLERANCE, "cases": cases},
+                              indent=1) + "\n", encoding="utf-8")
+    LOG.info("wrote %s -- %d case(s)", out, len(cases))
+    return 0
 
 
 DEATH_CASES_SCHEMA = "incubation.death-cases/1"
@@ -2302,6 +3022,281 @@ def check_crush_wall(ck: Checker, phases: dict[str, Any]) -> None:
                f"{mission}: two calls marked the same cell")
 
 
+def _land_state(row: dict[str, Any] | None) -> tuple[int, bytes] | None:
+    """`(count, table)` as a row's two land reads left them."""
+    reads = _reads(row)
+    count = reads.get(f"0x{LAND_COUNT:x}")
+    table = reads.get(f"[0x{LAND_TABLE:x}]")
+    if count is None or table is None or len(table) != LAND_TABLE_BYTES:
+        return None
+    return struct.unpack("<I", count)[0], table
+
+
+def _land_record(table: bytes, index: int) -> bytes:
+    return table[index * LAND_RECORD:(index + 1) * LAND_RECORD]
+
+
+def _land_position(table: bytes, index: int) -> tuple[int, int, int]:
+    return struct.unpack_from("<3i", table, index * LAND_RECORD + LAND_POSITION)
+
+
+def land_search(table: bytes, count: int, at: tuple[int, int, int],
+                box: tuple[int, int, int]) -> int:
+    """`0x00406F20`: strictly inside the box on every axis, the smallest
+    `|dx| + |dy| + |dz|`, the first in table order on a tie (`jae` against
+    a best that starts at `-1`); `-1` for none."""
+    best, best_sum = -1, None
+    for index in range(count):
+        d = [abs(a - b) for a, b in zip(_land_position(table, index), at)]
+        if any(v >= limit for v, limit in zip(d, box)):
+            continue
+        if best_sum is None or sum(d) < best_sum:
+            best, best_sum = index, sum(d)
+    return best
+
+
+def _symbol_position(row: dict[str, Any] | None) -> tuple[int, int, int] | None:
+    for key, raw in _reads(row).items():
+        if key.startswith("$s"):
+            return struct.unpack_from("<3i", raw, RECORD_POSITION)
+    return None
+
+
+def _changed_cells(before: bytes, after: bytes, width: int) -> list[tuple[int, int]]:
+    stride = gold.CELL_STRIDE
+    return [(i % width, i // width) for i in range(len(before) // stride)
+            if before[i * stride:(i + 1) * stride]
+            != after[i * stride:(i + 1) * stride]]
+
+
+def check_land_table(ck: Checker, root: str, phases: dict[str, Any]) -> None:
+    """`docs/20` §7.4 item 12 -- the special-object table, read live.
+
+    (a) every loadable mission's load leaves the `.lev`'s count and its
+    records in the table; (b) `Platform` moves the record its search finds,
+    by the ride's own distance; (c) an object inserted at run time has its
+    own cell as its footprint; (d) `FootBridge` frees the record nearest the
+    **command cell's** marker.
+    """
+    missions = land_missions(root)
+    by_slot = {land_slot(root, m): m for m in missions}
+    loaded: dict[str, tuple[int, bytes]] = {}
+    phase = phases.get("land_table_loads") or {}
+    ck.pin("land_table_loads.captured", bool(phase.get("rows")),
+           "phase missing -- re-take it")
+    for row in phase.get("rows") or []:
+        mission = by_slot.get(int(row["args"][0]))
+        state = _land_state(row)
+        ck.pin(f"land.load.{mission}.loaded",
+               mission is not None and row.get("result") == "1"
+               and state is not None, f"{row.get('args')} {row.get('result')}")
+        if mission is not None and state is not None:
+            loaded[mission] = state
+    # A mission that faulted as a fresh process's first load is named, and
+    # the pin below holds the list: a capture that reached fewer fails.
+    ck.pin("land.load.faulted_first", list(phase.get("faulted_first") or [])
+           == list(LAND_LOAD_FAULTS), f"{phase.get('faulted_first')}")
+    ck.pin("land.load.every_mission",
+           sorted(set(loaded) | set(LAND_LOAD_FAULTS)) == missions,
+           f"{len(loaded)}/{len(missions)} loaded; missing "
+           f"{sorted(set(missions) - set(loaded) - set(LAND_LOAD_FAULTS))[:5]}")
+    count_bad, record_bad, tail_bad = [], [], []
+    for mission, (count, table) in sorted(loaded.items()):
+        bm = land_map(root, mission)
+        if count != len(bm.special):
+            count_bad.append(f"{mission}: {count} != {len(bm.special)}")
+        for index, record in enumerate(bm.special):
+            live = _land_record(table, index)
+            if any(live[f] != record.raw[f] for f in LAND_AUTHORED):
+                record_bad.append(f"{mission}[{index}]")
+        # Past the count the block is the file's, byte for byte: the load is
+        # one `aLoadFile` of 9900 bytes, and the fix-up `0x00404D30` walks
+        # the counted records only.
+        if table[count * LAND_RECORD:] != bm.special_objects[count * LAND_RECORD:]:
+            tail_bad.append(mission)
+    ck.pin("land.load.count_is_the_levs", not count_bad and bool(loaded),
+           f"{len(loaded) - len(count_bad)}/{len(loaded)}; {count_bad[:5]}")
+    ck.pin("land.load.records_are_the_levs", not record_bad and bool(loaded),
+           f"{record_bad[:5]}")
+    ck.pin("land.load.block_read_verbatim_past_the_count",
+           not tail_bad and bool(loaded), f"{tail_bad[:5]}")
+    LOG.info("land table: %d/%d missions loaded with the .lev's count and "
+             "records", len(loaded) - len(count_bad), len(missions))
+
+    # (b) Platform.
+    rows = (phases.get("land_table_platform") or {}).get("rows")
+    ck.pin("land_table_platform.captured", bool(rows), "phase missing")
+    if rows:
+        bm = land_map(root, PLATFORM_MISSION)
+        first = _land_state(_row_after(rows, "aGetCtrlMapElementPtr"))
+        markers = [_symbol_position(r) for r in rows
+                   if r.get("call") == "aGetSymbolObjectPtr"]
+        rides = [r for r in rows if r.get("call") == "aPlayPlatformSequence"]
+        ck.pin("platform.reads", first is not None
+               and len(rides) == len(PLATFORM_CALLS)
+               and len(markers) == len(PLATFORM_CALLS), "a read is missing")
+        found: list[int] = []
+        if first is not None and len(rides) == len(PLATFORM_CALLS):
+            count, table = first
+            for i, (x, y, d, n) in enumerate(PLATFORM_CALLS):
+                ck.pin(f"platform.{i}.marker_is_the_cell_origin",
+                       markers[i] == (x * 3200, y * 3200,
+                                      bm.cells[y * bm.width + x].height),
+                       f"{markers[i]}")
+                after = _land_state(rides[i])
+                if after is None:
+                    ck.pin(f"platform.{i}.read", False, "no table read")
+                    break
+                index = land_search(table, count, markers[i], PLATFORM_BOX)
+                found.append(index)
+                want = bytearray(table)
+                if index >= 0:
+                    px, py, pz = _land_position(table, index)
+                    dx, dy = PLATFORM_STEP[d]
+                    struct.pack_into("<3i", want, index * LAND_RECORD + LAND_POSITION,
+                                     px + dx * n * 3200, py + dy * n * 3200, pz)
+                ck.pin(f"platform.{i}.count_unchanged", after[0] == count,
+                       f"{count} -> {after[0]}")
+                ck.pin(f"platform.{i}.moves_the_found_record_by_the_ride",
+                       index >= 0 and after[1] == bytes(want),
+                       f"found {index}; changed records "
+                       f"{[k for k in range(LAND_SLOTS) if _land_record(after[1], k) != _land_record(table, k)]}")
+                count, table = after
+        # The rides are `_C_105`'s three platforms there and back: each pair
+        # finds the same record, the second time at the cell the first left
+        # it on -- which only a table that moved can answer.
+        ck.pin("platform.each_pair_finds_one_record",
+               found == [8, 8, 7, 7, 44, 44], f"{found}")
+        ck.pin("platform.the_records_are_the_platforms",
+               all(bm.special[k].prototype_name(bm.world_set) == "L024EB00.3DI"
+                   for k in set(found) if k >= 0), f"{found}")
+
+    # (b') The ride and the cell height: `0x00413011` copies `+0x0D..+0x10`
+    # and never `+0x01`, so a raised source block stays raised and the
+    # destination keeps its own height.
+    rows = (phases.get("land_table_platform_height") or {}).get("rows")
+    ck.pin("land_table_platform_height.captured", bool(rows), "phase missing")
+    if rows:
+        bm = land_map(root, PLATFORM_MISSION)
+        dumps = [_cells_of(r) for r in rows if _cells_of(r)]
+        x, y, d, n = PLATFORM_CALLS[0]
+        dx, dy = PLATFORM_STEP[d]
+        ck.pin("platform_height.reads", len(dumps) == 2, f"{len(dumps)} map reads")
+        if len(dumps) == 2:
+            before, after = dumps
+
+            def height(cells: bytes, cx: int, cy: int) -> int:
+                at = (cy * bm.width + cx) * gold.CELL_STRIDE + CELL_HEIGHT
+                return struct.unpack_from("<i", cells, at)[0]
+
+            block = [(x + ox, y + oy) for ox in (-1, 0, 1) for oy in (-1, 0, 1)]
+            ck.pin("platform_height.source_was_raised",
+                   all(height(before, cx, cy) == PLATFORM_PROBE_HEIGHT
+                       for cx, cy in block)
+                   and all(height(before, cx + dx * n, cy + dy * n) == 0
+                           for cx, cy in block), "the probe write did not land")
+            ck.pin("platform_height.source_keeps_its_height",
+                   all(height(after, cx, cy) == PLATFORM_PROBE_HEIGHT
+                       for cx, cy in block),
+                   f"{[height(after, cx, cy) for cx, cy in block]}")
+            ck.pin("platform_height.destination_keeps_its_own",
+                   all(height(after, cx + dx * n, cy + dy * n) == 0
+                       for cx, cy in block),
+                   f"{[height(after, cx + dx * n, cy + dy * n) for cx, cy in block]}")
+            ck.pin("platform_height.the_ride_ran",
+                   all(after[((cy + dy * n) * bm.width + cx + dx * n)
+                             * gold.CELL_STRIDE + CELL_FIELD_TYPE]
+                       == before[(cy * bm.width + cx) * gold.CELL_STRIDE
+                                 + CELL_FIELD_TYPE]
+                       and after[(cy * bm.width + cx) * gold.CELL_STRIDE
+                                 + CELL_FIELD_TYPE] == 4
+                       for cx, cy in block), "the field types did not move")
+
+    # (c) The run-time objects' footprints.
+    rows = (phases.get("land_table_inserted") or {}).get("rows")
+    ck.pin("land_table_inserted.captured", bool(rows), "phase missing")
+    if rows:
+        bm = land_map(root, INSERTED_MISSION)
+        base = _land_state(_row_after(rows, "aGetCtrlMapElementPtr"))
+        inserts = [r for r in rows if r.get("call") == "aInsertLandObject"]
+        marks = [r for r in rows if r.get("call") == "aMarkCellsUnderObject"]
+        markers = [_symbol_position(r) for r in rows
+                   if r.get("call") == "aGetSymbolObjectPtr"]
+        cells = [_cells_of(_row_after(rows, "aGetCtrlMapElementPtr"))] + \
+            [_cells_of(r) for r in marks]
+        ck.pin("inserted.reads", base is not None
+               and len(inserts) == len(marks) == len(markers)
+               == len(INSERTED_OBJECTS) and None not in cells,
+               "a read is missing")
+        if base is not None and len(inserts) == len(INSERTED_OBJECTS) \
+                and None not in cells:
+            count = base[0]
+            for i, (model, (x, y), heading) in enumerate(INSERTED_OBJECTS):
+                tag = f"inserted.{i}.{model[:8]}"
+                state = _land_state(inserts[i])
+                ck.pin(f"{tag}.appended", inserts[i].get("result") == "1"
+                       and state is not None and state[0] == count + i + 1,
+                       f"{inserts[i].get('result')} {state and state[0]}")
+                if state is None:
+                    continue
+                record = _land_record(state[1], count + i)
+                ck.pin(f"{tag}.at_the_marker",
+                       markers[i] is not None
+                       and _land_position(state[1], count + i) == markers[i]
+                       and markers[i][:2] == (x * 3200, y * 3200)
+                       and struct.unpack_from("<3H", record, 0x20)
+                       == (0, 0, heading),
+                       f"{_land_position(state[1], count + i)} vs {markers[i]}")
+                marked = _changed_cells(cells[i], cells[i + 1], bm.width)
+                ck.pin(f"{tag}.footprint_is_its_own_cell", marked == [(x, y)],
+                       f"marked {marked}")
+            # The same answer is arithmetic for every heading the effect
+            # stream can draw: `inclib.footprint` over all 4096.
+            from inclib import prototyp as protomod
+            from inclib.convert import world_paths
+            paths = world_paths(Path(root), bm.world_set, bm.world_scene)
+            container = protomod.load_container(str(paths["din"]), str(paths["bin"]))
+            tables = eng3d.load(root)
+            from inclib import footprint as footprintmod
+            for model in sorted({m for m, _c, _h in INSERTED_OBJECTS}):
+                proto = container.parse(container.find(model))
+                x = y = 10
+                shapes = {tuple(footprintmod.cells_under(
+                    footprintmod.object_polygons(
+                        proto, x * 3200, y * 3200, (0, 0, h), tables),
+                    bm.width, bm.height)) for h in range(4096)}
+                ck.pin(f"inserted.{model[:8]}.own_cell_at_every_heading",
+                       shapes == {(y * bm.width + x,)}, f"{shapes}")
+
+    # (d) FootBridge.
+    rows = (phases.get("land_table_footbridge") or {}).get("rows")
+    ck.pin("land_table_footbridge.captured", bool(rows), "phase missing")
+    if rows:
+        bm = land_map(root, FOOT_BRIDGE_MISSION)
+        before = _land_state(_row_after(rows, "aGetCtrlMapElementPtr"))
+        after = _land_state(_row_after(rows, "aPlayFootBridgeSequence"))
+        marker = _symbol_position(_row_after(rows, "aGetSymbolObjectPtr"))
+        x, y = FOOT_BRIDGE_CALL[:2]
+        ck.pin("footbridge.reads", None not in (before, after, marker), "a read is missing")
+        if before is not None and after is not None and marker is not None:
+            ck.pin("footbridge.marker_is_the_cell_origin",
+                   marker == (x * 3200, y * 3200, bm.cells[y * bm.width + x].height),
+                   f"{marker}")
+            index = land_search(before[1], before[0], marker, FOOT_BRIDGE_BOX)
+            ck.pin("footbridge.search_finds_the_bridge",
+                   index >= 0 and bm.special[index].prototype_name(bm.world_set)
+                   == "L025EB00.3DI", f"{index}")
+            # `aDeleteLand` `0x00406C30`: the records above move down one,
+            # in order, and the count drops by one.
+            count, table = before
+            want = (table[:index * LAND_RECORD]
+                    + table[(index + 1) * LAND_RECORD:count * LAND_RECORD])
+            ck.pin("footbridge.frees_that_record_and_keeps_the_order",
+                   after[0] == count - 1
+                   and after[1][:(count - 1) * LAND_RECORD] == want,
+                   f"count {count} -> {after[0]}")
+
+
 def check(path: Path, root: str) -> int:
     if not path.is_file():
         LOG.error("%s: no capture; take one with --game-copy", path)
@@ -2322,6 +3317,8 @@ def check(path: Path, root: str) -> int:
     check_deaths(ck, root, phases)
     check_special(ck, root, phases)
     check_crush_wall(ck, phases)
+    check_land_table(ck, root, phases)
+    check_body_aim(ck, root, phases)
     for line in ck.failed:
         print("FAIL " + line)
     print(f"presentation_gold: {ck.passed}/{ck.passed + len(ck.failed)} checks passed")
@@ -2371,14 +3368,45 @@ def capture(game_copy: Path, dbgcall: Path, out: Path, attempts: int,
         if name in phases and not only:
             LOG.info("%s: already captured, skipping (name it with --phase to re-take)", name)
             continue
+        call_timeout: int | None = None
+        if name in LAND_PHASES:
+            stage_land_saves(game_copy)
         if name == "idle_random":
             plan = idle_random_plan()
+        elif name == "land_table_loads":
+            phase = phases.setdefault(name, {})
+
+            def save() -> None:
+                out.parent.mkdir(parents=True, exist_ok=True)
+                out.write_text(json.dumps(document, indent=1), encoding="utf-8")
+            capture_land_loads(game_copy, dbgcall, phase, attempts, save)
+            continue
+        elif name == "land_table_platform":
+            plan = land_platform_plan(game_copy)
+            call_timeout = PLATFORM_CALL_TIMEOUT_MS
+        elif name == "land_table_platform_height":
+            plan = land_platform_height_plan(game_copy)
+            call_timeout = PLATFORM_CALL_TIMEOUT_MS
+        elif name == "land_table_footbridge":
+            plan = land_footbridge_plan(game_copy)
+            call_timeout = PLATFORM_CALL_TIMEOUT_MS
+        elif name == "land_table_inserted":
+            plan = land_inserted_plan(game_copy)
         elif name == "idle_pose":
             plan = idle_pose_plan(pose_movements(str(game_copy), phases))
         elif name == "jump_scream":
             plan = jump_scream_plan()
         elif name == "frame_limiter":
             plan = frame_limiter_plan()
+        elif name in BODY_AIM_CASES:
+            slot = BODY_AIM_CASES[name].save_slot
+            if not (game_copy / "Work" / "Saves2" / f"_{slot}_.sav").is_file():
+                LOG.error("%s loads slot %d, which is not staged: copy "
+                          "tests/fixtures/saves/_%d_.sav to Work/Saves2/",
+                          name, slot, slot)
+                status = 1
+                continue
+            plan = body_aim_plan(name)
         elif name == "deaths_state":
             plan = deaths_state_plan()
         elif name in crush_wall_sites():
@@ -2429,7 +3457,8 @@ def capture(game_copy: Path, dbgcall: Path, out: Path, attempts: int,
             plan = death_plan(call[0], call[1], call[2], call[3], death_tiles(state),
                               _read_dword(state, f"0x{blob_gold.POOL_HANDLE:x}"))
         try:
-            rows = gold.run_plan(game_copy, dbgcall, plan, f"pres_{name}", attempts=attempts)
+            rows = gold.run_plan(game_copy, dbgcall, plan, f"pres_{name}", attempts=attempts,
+                                 call_timeout_ms=call_timeout)
         except gold.CaptureError as err:
             LOG.error("%s: %s", name, err)
             status = 1
@@ -2464,6 +3493,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="write the idle scheduler's cases for the Godot suite")
     parser.add_argument("--emit-special-cases", metavar="PATH", type=Path,
                         help="write the cell placers' cases for the Godot suite")
+    parser.add_argument("--emit-aim-cases", metavar="PATH", type=Path,
+                        help="write the body-aim cases test_charisma.gd replays")
     parser.add_argument("--root", default="gog_incubation",
                         help="game root for --emit-death-cases")
     parser.add_argument("-v", "--verbose", action="store_true")
@@ -2477,6 +3508,8 @@ def main(argv: list[str] | None = None) -> int:
             sys.stdout.write(idle_pose_plan(args.movements))
         elif args.print_plan == "deaths_state":
             sys.stdout.write(deaths_state_plan())
+        elif args.print_plan in BODY_AIM_CASES:
+            sys.stdout.write(body_aim_plan(args.print_plan))
         else:
             parser.error("a death plan is rendered from the deaths_state phase; "
                          "take that phase and read the copy's pres_death_*.plan")
@@ -2487,6 +3520,8 @@ def main(argv: list[str] | None = None) -> int:
         return emit_idle_cases(args.out, args.root, args.emit_idle_cases)
     if args.emit_special_cases:
         return emit_special_cases(args.out, args.root, args.emit_special_cases)
+    if args.emit_aim_cases:
+        return emit_aim_cases(args.out, args.emit_aim_cases)
     if args.check:
         return check(args.out, args.check)
     if args.game_copy is None or args.dbgcall is None:

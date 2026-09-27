@@ -48,6 +48,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from inclib import lcl  # noqa: E402
 from inclib.combat import hit_percent, magic_div_2400_plus_1  # noqa: E402
+from inclib.info import InfoError, load_info  # noqa: E402
 from inclib.lev import LevError, load_lev  # noqa: E402
 from inclib.pe import PEError, PEFile  # noqa: E402
 
@@ -217,6 +218,56 @@ PARAM_COLUMN_WRITE = 0x0046FAB3
 #: The weapon record's base, so ``special`` (+0x3B) and ``param`` (+0x3F) can
 #: be read back out of the arm's own displacements.
 WEAPON_TABLE_BASE = 0x0051B2C0
+
+# --- docs/21 6, docs/43 5.5: weapon `special` 5, the capture arm -------------
+
+#: The weapon ``special`` value whose phase-2 arm copies what the shot hit
+#: into the unit pool, and the one ``Info.lcl`` row that carries it.
+POOL_CAPTURE_SPECIAL = 5
+POOL_CAPTURE_WEAPONS = frozenset({24})
+#: ``special -> in-use rows`` over the whole weapon table: 2, 3 and 4 ship on
+#: nothing, 5 and 6 on one row each.
+WEAPON_SPECIAL_SPREAD = {0: 33, 1: 6, 5: 1, 6: 1}
+#: ``aAddUnitToUnitPool(player, unit)``.
+ADD_UNIT_TO_POOL = 0x00478C10
+#: ``(address, bytes, what)`` -- the arm read as bytes.  ``esi`` is the
+#: dispatcher's second argument, the unit the shot hit; the flag test gates
+#: only the copy, and both of its exits land on the ``+0x16 = 0`` that kills.
+POOL_CAPTURE_ARM = (
+    (0x0046F855, "83e804744e480f85",
+     "sub eax, 4 / je case 4 / dec eax / jne -- the arm is case 5"),
+    (0x0046F861, "8b7424188a464d84c0742e",
+     "esi = arg 2, the unit hit; test its pool flag +0x4D, je -> 0x0046F89A"),
+    (0x0046F86C, "33c0568a4645c646160150e8",
+     "push unit, push unit[+0x45] -- its own player's row; +0x16 = 1 first"),
+    (0x0046F87C, "83c40885c07517",
+     "a full pool returns 0 into the reporter, a bare ret; jne -> 0x0046F89A"),
+    (0x0046F89A, "c6461600b801000000",
+     "unit[+0x16] = 0 on every path through the arm, then return 1"),
+)
+#: ``aAttackUnit`` around the phase-2 call: the call runs only when
+#: ``applyDamage`` dealt something (``jbe`` on the dealt byte), and the kill
+#: test right after it reads the ``+0x16`` the arm has just zeroed.
+POOL_CAPTURE_CALLER = (
+    (0x0046BE0E, "8a44241384c076186a026a005756e8",
+     "dealt = [esp+0x13]; jbe past the phase-2 call when nothing was dealt"),
+    (0x0046BE4F, "8a471684c00f85",
+     "target[+0x16] == 0 -- the kill test, after the call"),
+    (0x0046BE5C, "c6035d", "the cell's marker becomes 0x5D, killed"),
+)
+#: Inside ``aAddUnitToUnitPool``: the row bound is the player-slot count
+#: (``0x0043B310``, 1 in a campaign) compared with ``jg``, so row == count is
+#: admitted; the free-slot test reads ``+0x16`` of each record; the walk stops
+#: at 30 of the row's 31 slots.
+POOL_ROW_BOUND_CALL = (0x00478C1F, 0x0043B310)
+POOL_ROW_BOUND_TEST = (0x00478C24, "3bf00f8f")
+POOL_SLOT_COLUMN = (0x00478C46, 0x0051F2A0 + 0x16)
+POOL_SLOT_LIMIT = (0x00478C56, "83fa1e")
+#: The catalogue's forward stepper ``cmp edi, 0x51B834`` (``docs/27`` 5.2):
+#: a weapon is buyable only while its record lies below that address.
+CATALOGUE_WEAPON_BOUND_AT = 0x0047A18D
+CATALOGUE_WEAPON_BASE = 0x0051B2F8
+WEAPON_RECORD_SIZE = 67
 
 
 # --- provably private globals -----------------------------------------------
@@ -1260,6 +1311,87 @@ def _check_close_combat(tables: "CombatTables", stats: "Stats") -> None:
                 "the swap does not write the `param` column")
 
 
+def _check_pool_capture(tables: "CombatTables", stats: "Stats", root: str,
+                        placed_weapons: set[int]) -> None:
+    """``docs/43`` 5.5's weapon ``special`` 5 -- as bytes, then as reach.
+
+    The arm copies the unit the shot **hit** into its own player's pool row
+    with ``+0x16`` forced to 1 and no recompute, and zeroes the live unit's
+    ``+0x16`` whether or not it copied, so the shot kills.  The second half
+    says why no shipped game ever runs it: the one carrier is weapon 24, which
+    no unit type defaults to, no toggle or ``param`` names, no ``.lev`` places
+    and the catalogue cannot sell.
+    """
+    pe = tables.pe
+    for va, want, what in POOL_CAPTURE_ARM + POOL_CAPTURE_CALLER:
+        got = pe.bytes_at(va, len(want) // 2).hex()
+        stats.check("capture.bytes", got == want,
+                    f"{va:#010x} is {got}, expected {want} ({what})")
+    call = 0x0046F877
+    rel = struct.unpack("<i", pe.bytes_at(call + 1, 4))[0]
+    stats.check("capture.calls_the_pool",
+                call + 5 + rel == ADD_UNIT_TO_POOL,
+                f"{call:#010x} does not call {ADD_UNIT_TO_POOL:#010x}")
+    # Both exits of the flag test and of the full-pool test land on the kill.
+    for jcc_at in (0x0046F86A, 0x0046F881):
+        target = jcc_at + 2 + struct.unpack("<b", pe.bytes_at(jcc_at + 1, 1))[0]
+        stats.check("capture.kill_is_unconditional", target == 0x0046F89A,
+                    f"the branch at {jcc_at:#010x} lands on {target:#010x}")
+    stats.check("capture.phase_two",
+                WEAPON_SPECIAL_CALLS.get(0x0046BE1C) == 2,
+                "the gated call is not the phase-2 site")
+
+    site, callee = POOL_ROW_BOUND_CALL
+    rel = struct.unpack("<i", pe.bytes_at(site + 1, 4))[0]
+    stats.check("capture.row_bound",
+                site + 5 + rel == callee
+                and pe.bytes_at(POOL_ROW_BOUND_TEST[0], 4).hex()
+                == POOL_ROW_BOUND_TEST[1],
+                "aAddUnitToUnitPool's row bound is not `player > slotCount()`")
+    stats.check("capture.slot_column",
+                pe.u32(POOL_SLOT_COLUMN[0]) == POOL_SLOT_COLUMN[1],
+                "the free-slot test does not read the pool's +0x16")
+    stats.check("capture.slot_limit",
+                pe.bytes_at(POOL_SLOT_LIMIT[0], 3).hex() == POOL_SLOT_LIMIT[1],
+                "the free-slot walk does not stop at 30")
+
+    try:
+        info = load_info(root)
+    except InfoError as exc:
+        stats.check("capture.info", False, str(exc))
+        return
+    carriers = {w.id for w in info.weapons.values()
+                if w.in_use and w.special == POOL_CAPTURE_SPECIAL}
+    stats.check("capture.carriers", carriers == POOL_CAPTURE_WEAPONS,
+                f"special {POOL_CAPTURE_SPECIAL} is carried by "
+                f"{sorted(carriers)}, expected {sorted(POOL_CAPTURE_WEAPONS)}")
+    # The whole column, so docs/21's "2, 3 and 4 on none" is a check too.
+    spread = defaultdict(int)
+    for w in info.weapons.values():
+        if w.in_use:
+            spread[w.special] += 1
+    stats.check("capture.special_spread",
+                dict(spread) == WEAPON_SPECIAL_SPREAD,
+                f"weapon specials are {dict(sorted(spread.items()))}, "
+                f"expected {WEAPON_SPECIAL_SPREAD}")
+    defaults = {u.weapon for u in info.units.values()}
+    stats.check("capture.no_unit_type", not carriers & defaults,
+                f"a unit type defaults to {sorted(carriers & defaults)}")
+    named = {w.toggle for w in info.weapons.values() if w.id not in carriers} \
+        | {w.param for w in info.weapons.values() if w.special}
+    stats.check("capture.no_toggle_or_param", not carriers & named,
+                f"a toggle or param names {sorted(carriers & named)}")
+    stats.check("capture.no_placement",
+                bool(placed_weapons) and not carriers & placed_weapons,
+                f"a placed unit carries {sorted(carriers & placed_weapons)}")
+    bound = (pe.u32(CATALOGUE_WEAPON_BOUND_AT) - CATALOGUE_WEAPON_BASE) \
+        // WEAPON_RECORD_SIZE
+    stats.check("capture.not_for_sale",
+                bound == 20 and all(w >= bound for w in carriers),
+                f"the catalogue sells ids below {bound}, carriers "
+                f"{sorted(carriers)}")
+
+
 def run_check(root: str) -> int:
     exe = os.path.join(root, GAME_EXE)
     if not os.path.isfile(exe):
@@ -1611,6 +1743,8 @@ def run_check(root: str) -> int:
 
     # 6c. docs/21 6: the close-combat swap, read out of the dispatcher
     _check_close_combat(tables, stats)
+    # 6d. docs/43 5.5: weapon special 5, the pool capture, and its reach
+    _check_pool_capture(tables, stats, root, weapon_ids)
 
     # 7. the hit curve over every shipped weapon
     weapons = load_weapons(root)

@@ -1913,7 +1913,19 @@ func _deployment_mode(h: TestHarness) -> void:
 	# clamps as a click's does.
 	if placed == slots.size() and cells.size() >= 2 and slots.size() >= 2:
 		var kept: int = main._deploy_slot
+		var shown_before: Dictionary[int, int] = main._picture_fog()
 		var back: Dictionary = main.recall_at(cells[1].x, cells[1].y)
+		# A take-back rebuilds no fog in the original: whatever the picture
+		# showed stands (docs/43 section 5.5).
+		var shown_after: Dictionary[int, int] = main._picture_fog()
+		var moved: int = 0
+		for fog_slot: int in shown_after:
+			if shown_before.has(fog_slot) \
+					and shown_after[fog_slot] != shown_before[fog_slot]:
+				moved += 1
+		h.check("deploy.a_take_back_keeps_the_fog",
+			moved == 0 and not main._fog._held.is_empty(),
+			"%d slot(s) changed; the hold is engaged" % moved)
 		var other: int = DictRead.as_int(back["slot"])
 		h.check("deploy.agent_recall_keeps_the_selection",
 			DictRead.as_string(back["result"]) == World.RECALL_OK
@@ -1921,6 +1933,8 @@ func _deployment_mode(h: TestHarness) -> void:
 			"0x004634EF: anyone still selected stays")
 		var elsewhere: Dictionary = main.place_from_roster(other, cells[1].x,
 			cells[1].y, 5)
+		h.check("deploy.a_placement_releases_the_hold",
+			main._fog._held.is_empty(), "0x00478DE4's fog pass is the fresh one")
 		h.check("deploy.agent_places_another_and_keeps_the_selection",
 			DictRead.as_string(elsewhere["result"]) == World.DEPLOY_OK
 			and main._deploy_slot == kept

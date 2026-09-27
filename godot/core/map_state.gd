@@ -276,6 +276,19 @@ func delete_land_object(id: int) -> bool:
 	return false
 
 
+## `0x00412D00`/`0x00412D03` -- a platform ride carrying one record `dx, dy`
+## world units along: `+0x10`/`+0x14` only, the height untouched (docs/20
+## section 7.4, measured on `_C_105`'s six rides). False for an unknown id.
+func move_land_object(id: int, dx: int, dy: int) -> bool:
+	for record: Dictionary in _land_objects:
+		if DictRead.as_int(record["id"]) == id:
+			record["x"] = DictRead.as_int(record["x"]) + dx
+			record["y"] = DictRead.as_int(record["y"]) + dy
+			_land_dirty = true
+			return true
+	return false
+
+
 ## `0x00406F20`: the record inside the box `half` around `at` -- strictly,
 ## `|d| < half` on each axis -- with the smallest `|dx| + |dy| + |dz|`, the
 ## first in table order on a tie. Answers its id or [constant NO_LAND_OBJECT].

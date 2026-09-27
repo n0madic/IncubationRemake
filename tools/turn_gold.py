@@ -45,6 +45,7 @@ import logging
 import struct
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -1272,6 +1273,94 @@ def probe_plan(header: str, probes: list[dict[str, Any]], width: int) -> str:
     return "\n".join(lines) + "\n"
 
 
+#: **Phase 15, `spawn`** -- which slot `aGenerateUnitElement` `0x00479CF0`
+#: writes a new unit into (``docs/94`` section 9 item 6).  Every insertion in
+#: the game reaches ``aInsertUnit`` `0x00477830` with a slot of ``-1``
+#: (`0x00479F6E`, `0x00472829`, `0x004728CC`, `0x0041C25C`), and that arm
+#: walks the array from slot 0 testing ``+0x16`` alone (`0x004778B2`: ``mov
+#: al, [edi+0x16]; test al, al; je``) up to 200, then refuses on **199**
+#: (`cmp ebx, 0xC7; jne` at `0x004778C5`) and not on 200.  The probes put
+#: the lowest free slot where each arm of that reading can be seen.
+SPAWN_DECLARATIONS = (
+    "__cdecl i32 aGenerateUnitElement(i32,i32,ptr,i32,i32,i32,i32,i32,ptr)"
+    " = Incubation.exe+0x79cf0\n")
+#: A computer `Ray'Ther`, the `InsertUnit` shape: player 255, rank 0, pool
+#: flag 0, `exact` 0 -- so the cell goes through `0x00479C60` first.
+SPAWN_PLAYER = PLAYER_ALIEN
+SPAWN_TYPE = 50
+#: A `Free Place` cell of `_C_141` with no unit, no obstacle and none on it.
+SPAWN_CELL = (14, 6)
+#: The byte the fill writes into a slot's `+0x16` to make it "placed".
+SPAWN_FILL_HP = 1
+#: What the refusal leaves in the out-parameter, and the slot a full array
+#: is written to -- one past the last, which `aGetUnitMapElementPtr`'s own
+#: bound (`cmp eax, 0xC8; jle` at `0x00477B0A`) also admits.
+SPAWN_REFUSED = 0xFFFFFFFF
+#: A unit's 3D object slot, which the insert's rebuild renumbers (docs/21
+#: section 10).
+UNIT_OBJECT_SLOT = 0x4B
+SPAWN_PAST_THE_END = gold.UNIT_SLOTS
+
+
+def spawn_probes(unit_bytes: bytes) -> list[dict[str, Any]]:
+    """Phase 15's five arrangements, each on a freshly loaded save."""
+    live = set(_live_slots(unit_bytes))
+    free = [slot for slot in range(gold.UNIT_SLOTS) if slot not in live]
+    lowest_live = min(live)
+    probes = [
+        {"tag": "as_loaded", "writes": []},
+        # A placed unit's `+0x16` cleared: the record keeps its name, its
+        # cell link and everything else, and is still the slot taken.
+        {"tag": "hp_cleared", "writes": [
+            _unit_write(lowest_live, gold.UNIT_HP, 0)]},
+    ]
+    for tag, bound in (("lowest_is_198", 198), ("lowest_is_199", 199),
+                       ("full", gold.UNIT_SLOTS)):
+        probes.append({"tag": tag, "writes": [
+            _unit_write(slot, gold.UNIT_HP, SPAWN_FILL_HP)
+            for slot in free if slot < bound]})
+    return probes
+
+
+def spawn_plan(probes: list[dict[str, Any]]) -> str:
+    """Reload, write, read the array (and one record past it), spawn, read."""
+    units = (gold.UNIT_SLOTS + 1) * gold.UNIT_STRIDE
+    cells = gold.CAPTURE_WIDTH * gold.CAPTURE_HEIGHT * gold.CELL_STRIDE
+    x, y = SPAWN_CELL
+    declarations = "\n".join(line for line in DECLARATIONS.splitlines()
+                             if "setb" not in line)
+    lines = ["# Phase 15: aGenerateUnitElement's slot",
+             declarations + "\n" + SPAWN_DECLARATIONS + gold.MEMCPY_DECL]
+    lines += gold.blob_lines([0, SPAWN_FILL_HP])
+    lines += ["--blob noname:00", "--buf slot:4", ""]
+    snapshot = (f"aGetUnitMapElementPtr(0) --read $u0:{units}\n"
+                f"aGetCtrlMapElementPtr(0,0) --read $c0:{cells}")
+    for i, probe in enumerate(probes):
+        lines += [f"# probe {i}: {probe['tag']}", "aSetSaveMode(0)",
+                  f"loaded = aLoadGame({gold.CAPTURE_SLOT})",
+                  "c0 = aGetCtrlMapElementPtr(0,0)",
+                  "u0 = aGetUnitMapElementPtr(0)"]
+        lines += [_probe_write(w) for w in probe["writes"]]
+        lines.append(snapshot)
+        lines.append(f"aGenerateUnitElement({SPAWN_PLAYER}, {SPAWN_TYPE}, "
+                     f"&noname, 0, 0, {x}, {y}, 0, &slot) --zero slot "
+                     f"--dump slot")
+        lines += [snapshot, ""]
+    return "\n".join(lines) + "\n"
+
+
+def engine_spawn_slot(unit_bytes: bytes) -> int:
+    """``0x00477830``'s slot for ``-1``, as read off the listing.
+
+    The lowest slot whose ``+0x16`` is 0; :data:`SPAWN_REFUSED` when that is
+    199; :data:`SPAWN_PAST_THE_END` when there is none.
+    """
+    for slot in range(gold.UNIT_SLOTS):
+        if not unit_bytes[slot * gold.UNIT_STRIDE + gold.UNIT_HP]:
+            return SPAWN_REFUSED if slot == gold.UNIT_SLOTS - 1 else slot
+    return SPAWN_PAST_THE_END
+
+
 #: Seconds one attempt of the platform phase may take: the ride animates for
 #: ``dist * 10`` frames with sound, after a reload.
 PLATFORM_TIMEOUT = MOVE_TIMEOUT
@@ -1889,6 +1978,40 @@ def capture(game_copy: Path, dbgcall: Path, root: Path, out: Path,
                 except Exception as exc:  # noqa: BLE001
                     LOG.warning("%s did not complete (%s: %s); it stays "
                                 "unpinned", name, type(exc).__name__, exc)
+
+    # Phase 15 -- the spawn slot.  Its own plan: five reloads, each with the
+    # array arranged so the lowest free slot sits where one arm of
+    # `0x00477830` can be seen, then one `aGenerateUnitElement`.
+    if not payload.get("spawn"):
+        probes = spawn_probes(unit_bytes)
+        try:
+            rows = gold.run_plan(game_copy, dbgcall, spawn_plan(probes),
+                                 "turn_spawn", attempts)
+            blocks = _reads(rows, "aGetUnitMapElementPtr", "$u0")
+            cellb = _reads(rows, "aGetCtrlMapElementPtr", "$c0")
+            slots = _dumps(rows, "aGenerateUnitElement", "slot")
+            returns = _results(rows, "aGenerateUnitElement")
+            wanted = len(probes)
+            if (len(blocks) != 2 * wanted or len(cellb) != 2 * wanted
+                    or len(slots) != wanted or len(returns) != wanted):
+                raise GoldError(
+                    f"phase 15 read {len(blocks)} unit and {len(cellb)} cell "
+                    f"dump(s), {len(slots)} slot(s) and {len(returns)} "
+                    f"return(s) for {wanted} probe(s)")
+            payload["spawn"] = {
+                "probes": probes,
+                "cell": list(SPAWN_CELL),
+                "returns": returns,
+                "slots": slots,
+                "units_before": [b.hex() for b in blocks[0::2]],
+                "units_after": [b.hex() for b in blocks[1::2]],
+                "cells_before": [b.hex() for b in cellb[0::2]],
+                "cells_after": [b.hex() for b in cellb[1::2]],
+            }
+            _write(payload, out)
+        except Exception as exc:  # noqa: BLE001
+            LOG.warning("phase 15 did not complete (%s: %s); the spawn slot "
+                        "stays unpinned", type(exc).__name__, exc)
     return 0
 
 
@@ -3392,6 +3515,9 @@ def run_check(capture_path: Path, root: Path) -> int:
         else:
             _probe_checks(c, payload, key, block, tables)
 
+    # --- phase 15, the spawn slot ----------------------------------------
+    _spawn_checks(c, payload, tables)
+
     # --- the lone recompute, and the correction to docs/25 section 5 ------
     if "units_recompute" not in payload:
         c.check("recompute.captured", False,
@@ -3415,6 +3541,92 @@ def run_check(capture_path: Path, root: Path) -> int:
                  wanted[-1],
                  "+0x15 holds exactly what aGetMovePoints returned")
     return c.report()
+
+
+def _spawn_checks(c: Checker, payload: dict[str, Any],
+                  tables: BalanceTables) -> None:
+    """Phase 15 -- the slot rule of ``0x00477830``, and where it lands.
+
+    Each probe's answer is compared with :func:`engine_spawn_slot` applied to
+    the array **as it stood before the call**, so the rule is checked against
+    the arrangement the probe actually made, not the one it meant to make.
+    The model (``lcl_runtime`` ``free_slot``) is held to every probe: the
+    listing's slot below 199, ``None`` for the refusal at 199, and ``None``
+    for the full array too -- where the engine writes one record past the
+    end, which the model and the remake refuse instead.
+    """
+    block = payload.get("spawn")
+    if not block:
+        c.check("spawn.captured", False,
+                "the capture holds no spawn phase; re-run --game-copy")
+        return
+    probes = block["probes"]
+    c.expect("spawn.every_arrangement_captured",
+             [p["tag"] for p in probes],
+             ["as_loaded", "hp_cleared", "lowest_is_198", "lowest_is_199",
+              "full"])
+    stride = gold.UNIT_STRIDE
+    x, y = block["cell"]
+    at = (y * gold.CAPTURE_WIDTH + x) * gold.CELL_STRIDE
+    for i, probe in enumerate(probes):
+        tag = probe["tag"]
+        before = bytes.fromhex(block["units_before"][i])
+        after = bytes.fromhex(block["units_after"][i])
+        cell_after = bytes.fromhex(block["cells_after"][i])
+        want = engine_spawn_slot(before)
+        got = block["slots"][i]
+        c.expect(f"spawn.{tag}.slot_is_the_listing_rule", got, want)
+        link = struct.unpack_from("<H", cell_after, at + 0x07)[0]
+        units = {s: lclmodrt.RuntimeUnit(
+            slot=s, player=before[s * stride + gold.UNIT_PLAYER],
+            type_id=before[s * stride + gold.UNIT_TYPE],
+            x=before[s * stride + gold.UNIT_X],
+            y=before[s * stride + gold.UNIT_Y],
+            hit_points=before[s * stride + gold.UNIT_HP])
+            for s in range(gold.UNIT_SLOTS)}
+        # `free_slot` reads nothing of its world but `units`.
+        world = SimpleNamespace(units=units)
+        c.expect(f"spawn.{tag}.model_agrees",
+                 lclmodrt.LclWorld.free_slot(world),  # type: ignore[arg-type]
+                 want if want < gold.UNIT_SLOTS - 1 else None)
+        if want == SPAWN_REFUSED:
+            c.expect(f"spawn.{tag}.refused_returns_false",
+                     block["returns"][i], 0)
+            c.expect(f"spawn.{tag}.refused_writes_nothing",
+                     after[:gold.UNIT_SLOTS * stride],
+                     before[:gold.UNIT_SLOTS * stride])
+            c.expect(f"spawn.{tag}.refused_leaves_the_cell_empty",
+                     link, 0xFFFF)
+            continue
+        c.expect(f"spawn.{tag}.returns_true", block["returns"][i], 1)
+        record = after[want * stride:(want + 1) * stride]
+        c.expect(f"spawn.{tag}.record_is_the_spawn",
+                 (record[gold.UNIT_TYPE], record[gold.UNIT_PLAYER],
+                  record[gold.UNIT_X], record[gold.UNIT_Y]),
+                 (SPAWN_TYPE, SPAWN_PLAYER, x, y))
+        c.check(f"spawn.{tag}.record_is_placed", record[gold.UNIT_HP] != 0,
+                f"+0x16 is {record[gold.UNIT_HP]}")
+        c.expect(f"spawn.{tag}.cell_links_the_slot", link, want)
+        # Every other record keeps every byte but `+0x4B`, its 3D object's
+        # slot: the insert ends in `0x00407AA0` (`0x00477962`), which rebuilds
+        # the standard objects and hands each placed unit a slot afresh.
+        others = [s for s in range(gold.UNIT_SLOTS) if s != want and
+                  [k for k in range(stride)
+                   if before[s * stride + k] != after[s * stride + k]
+                   and k != UNIT_OBJECT_SLOT]]
+        c.expect(f"spawn.{tag}.no_other_record_written_but_its_object_slot",
+                 others, [])
+    # The arrangements have to reach the arms they are named for, or the
+    # rule above is only checked where every reading agrees.
+    wanted = {p["tag"]: engine_spawn_slot(bytes.fromhex(b))
+              for p, b in zip(probes, block["units_before"])}
+    c.expect("spawn.arms_reached",
+             [wanted["lowest_is_198"], wanted["lowest_is_199"],
+              wanted["full"]],
+             [198, SPAWN_REFUSED, SPAWN_PAST_THE_END])
+    c.check("spawn.hp_cleared_reaches_a_named_record",
+            wanted["hp_cleared"] < wanted["as_loaded"],
+            f"{wanted['hp_cleared']} vs {wanted['as_loaded']}")
 
 
 def _move_checks(c: Checker, payload: dict[str, Any], move: dict[str, Any],

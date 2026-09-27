@@ -42,6 +42,7 @@ stage_fixtures() {
         presentation/cases_death.json:presentation/death.json \
         presentation/cases_special.json:presentation/special.json \
         presentation/cases_idle.json:presentation/idle.json \
+        presentation/cases_aim.json:presentation/aim.json \
         hud/cases_hud.json:hud/hud.json
     do
         src="$repo/tests/fixtures/${pair%%:*}"

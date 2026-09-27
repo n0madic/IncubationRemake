@@ -1634,6 +1634,23 @@ func _replay_positions(h: TestHarness) -> void:
 		h.check("fog.the_alien_seat_is_refused", same,
 			"it falls back to the seat the world says holds the turn")
 		fog.viewer = 0
+		# **A take-back's hold** (docs/43 section 5.5): what the picture showed
+		# before it stands against a fresh pass, until the next placement or
+		# the hand-over rebuilds.
+		var fresh: int = DictRead.as_int(fog.states(mirror)[alien])
+		var stale: int = Visibility.HIDDEN if fresh == Visibility.FULL \
+			else Visibility.FULL
+		var before: Dictionary[int, int] = {alien: stale}
+		fog.hold(before)
+		h.equal("fog.a_take_back_holds_what_was_shown",
+			DictRead.as_int(fog.states(mirror)[alien]), stale)
+		fog.release()
+		h.equal("fog.a_placement_releases_it",
+			DictRead.as_int(fog.states(mirror)[alien]), fresh)
+		fog.hold(before)
+		fog.note_event("hand_over", -1, {})
+		h.equal("fog.a_hand_over_releases_it",
+			DictRead.as_int(fog.states(mirror)[alien]), fresh)
 		fog.viewer = 0
 		# A shooter that fired is forced visible for the rest of the replay,
 		# because the engine's write is permanent until the hand-over.

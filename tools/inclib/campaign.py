@@ -29,6 +29,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
+from .interact import EQUIP_DOUBLE_MUNITION, magazine_for
+
 LOG = logging.getLogger(__name__)
 
 # --- the pool's storage -- docs/27 section 3, docs/10 section 5.11 -----------
@@ -162,6 +164,18 @@ SEED_RECORDS = _seed_records()
 
 
 # --- one roster record -------------------------------------------------------
+
+def refill_magazine(rec: "PoolRecord", weapon_mun: int | None) -> None:
+    """The magazine half of ``0x004759E0``, the full recompute ``aBuyWeapon``
+    (``0x004756B6``) and ``aBuyEquipment`` (``0x00475669``) both end with:
+    ``+0x3D`` is the carried weapon's ``mun``, doubled by the Ammo Pack into a
+    byte (``docs/43`` §5.5).  ``None`` -- a caller with no weapon table --
+    leaves the record's own.
+    """
+    if weapon_mun is None:
+        return
+    rec.ammo = magazine_for(weapon_mun, rec.has_equipment(EQUIP_DOUBLE_MUNITION))
+
 
 def kit_value(weapon_cost: int, rec: "PoolRecord",
               equipment_costs: dict[int, int]) -> int:
@@ -663,7 +677,8 @@ class CampaignState:
 
     def buy_weapon(self, player: int, slot: int, weapon: int, *,
                    costs: dict[int, int],
-                   equipment_costs: dict[int, int] | None = None) -> bool:
+                   equipment_costs: dict[int, int] | None = None,
+                   weapon_mun: int | None = None) -> bool:
         """``docs/27`` §5.3 -- refund the old, spend the new, recompute ``+0x5A``.
 
         The order is the engine's: the refund at ``0x0045AAC7`` happens first,
@@ -686,17 +701,23 @@ class CampaignState:
             return False
         rec.weapon = weapon
         rec.resale = kit_value(new_cost, rec, equipment_costs or {})
+        refill_magazine(rec, weapon_mun)
         return True
 
     def buy_equipment(self, player: int, slot: int, item: int, *,
-                      cost: int) -> bool:
-        """``0x0045A9E9`` -- guarded on the unit's carried-equipment bitmap."""
+                      cost: int, weapon_mun: int | None = None) -> bool:
+        """``0x0045A9E9`` -- guarded on the unit's carried-equipment bitmap.
+
+        *weapon_mun* is the carried weapon's magazine, for the refill
+        :func:`refill_magazine` does.
+        """
         rec = self.roster.row(ROW_LIVE)[slot]
         if not rec.occupied or rec.has_equipment(item):
             return False
         if not self.spend_points(player, cost):
             return False
         rec.set_equipment(item, True)
+        refill_magazine(rec, weapon_mun)
         return True
 
     # -- the end of a mission -- docs/27 section 6.2 --------------------------

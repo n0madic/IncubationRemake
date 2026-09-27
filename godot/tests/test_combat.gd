@@ -122,6 +122,34 @@ func _multi_target(h: TestHarness) -> void:
 		"the two within four fields of the aim and along the facing; the one "
 		+ "behind the shooter is banded and not marked")
 
+	# **The player's shot keeps its own octant** (docs/92 section 7.20 A6):
+	# the original's click handler would now turn the shooter to its best
+	# band -- here the alien behind it -- and `SliceMain.attack_cell` does not.
+	var played: World = World.create(TestFixtures.map_document(9, 6, records),
+		balance, 1.0)
+	played.turn.current_player = 0
+	var best: int = played.facing_to_target(0)
+	played.enable_journal()
+	var main: SliceMain = SliceMain.new()
+	main.world = played
+	main._shown = played.clone()
+	main._strings = Localization.new()
+	main._geometry = {"prototypes": {}}
+	var units: UnitsView = UnitsView.new()
+	units.shown_ref = main._shown
+	main._units = units
+	main._sequences = SequenceQueue.create(null)
+	main._selected = 0
+	var clicked: AttackResult = main.attack_cell(5, 2)
+	var after: int = DictRead.as_int(played.unit_view(0)["facing"])
+	var aimed: int = Combat.direction(1, 2, 5, 2)
+	h.check("player_shot.keeps_the_shot_octant",
+		clicked.fired and after == aimed and best != aimed,
+		"facing %d after the shot; the best band would have been %d"
+			% [after, best])
+	units.free()
+	main.free()
+
 
 # --- the tables --------------------------------------------------------------
 
@@ -1981,18 +2009,26 @@ func _world_wiring(h: TestHarness) -> void:
 			_instr("command", "SetActPt", [_num(3), _num(2), _num(35)]),
 			_instr("close", "", []),
 		])), "the console program did not load")
+	var carried_type: int = console.state.field_type_at(
+		console.state.index_of(4, 7))
 	var pressed: UseResult = console.submit_use(UseCommand.create(0))
 	h.equal("world.the_console_is_the_default_arm",
 		[pressed.kind, pressed.fires_script_event], ["script_only", true])
 	h.check("world.the_use_ran_the_mission_program",
 		DictRead.as_bool(pressed.script_result.get("ran", false)),
 		str(pressed.script_result))
+	# The ride carries the field type and leaves a deep hole, but **not** the
+	# height: both cells keep their own (docs/20 section 7.4 step 4, measured
+	# with the source raised to 1600).
 	h.equal("world.the_platform_rode_on_the_use",
-		[console.state.height_at(console.state.index_of(4, 4)),
-			console.state.field_type_at(console.state.index_of(4, 7))],
-		[Interact.DOOR_HEIGHT_STEP, Platform.CTRL_TYPE_DEEP_HOLE],
-		"the block's height reached the destination and the source is a "
-		+ "deep hole -- the `Platform` command ran")
+		[console.state.field_type_at(console.state.index_of(4, 4)),
+			console.state.field_type_at(console.state.index_of(4, 7)),
+			console.state.height_at(console.state.index_of(4, 4)),
+			console.state.height_at(console.state.index_of(4, 7))],
+		[carried_type, Platform.CTRL_TYPE_DEEP_HOLE, 0,
+			Interact.DOOR_HEIGHT_STEP],
+		"the type reached the destination, the source is a deep hole and "
+		+ "neither height moved -- the `Platform` command ran")
 	h.equal("world.the_script_flipped_the_console",
 		console.state.action_point_at(console.state.index_of(3, 2)), 35,
 		"`SetActPt` beside the ride, the way `_C_105.lcl` pairs them")

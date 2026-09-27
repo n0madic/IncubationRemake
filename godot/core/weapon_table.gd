@@ -75,8 +75,23 @@ func magazine(weapon_id: int) -> int:
 ## the truncation is what the store does, and inventing a clamp here would put
 ## a number in the record that the original never writes.
 func magazine_for(weapon_id: int, double_munition: bool) -> int:
-	var mun: int = magazine(weapon_id)
+	return fill(magazine(weapon_id), double_munition)
+
+
+## [method magazine_for] over a `mun` the caller already holds -- a balance
+## row, where no table is at hand. The one place the rule is written.
+static func fill(mun: int, double_munition: bool) -> int:
 	return (mun * 2) & 0xFF if double_munition else mun
+
+
+## [method fill] for *unit*'s own kit: the rounds its record is filled to.
+static func fill_for(unit: UnitState, mun: int) -> int:
+	return fill(mun, unit.has_equipment(Interact.EQUIP_DOUBLE_MUNITION))
+
+
+## The rounds *unit* is filled to with the weapon it carries.
+func magazine_of(unit: UnitState) -> int:
+	return fill_for(unit, magazine(unit.weapon))
 
 
 ## docs/21 section 6 -- `Hit (%)`, the accuracy the curve starts from.

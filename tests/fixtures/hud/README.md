@@ -42,7 +42,7 @@ What it holds, and where each table comes from (`docs/43`):
   `sm`, `ui`, `mi`, `uicons`, `map`, `mouse`, `inv`, `umun`, `uweapons`.
 * `texts` -- the caption ids the interface asks `Txtmod_h` and `Txtmod_g` for.
 
-`--emit-cases` refuses to write when any of the 217 checks fails, so a fixture
+`--emit-cases` refuses to write when any of the 223 checks fails, so a fixture
 on disk is one the binary agreed with.  The suite fails when the file is
 missing: `run_tests.sh` copies it into `godot/generated/hud/hud.json`.
 
@@ -62,3 +62,20 @@ surface, with the lit pixels of each phase kept so `--check` can decode them
 against `mp.LIB` again.  Six phases: the marine unselected on both tick
 phases, selected on both, and spent with and without overwatch.  Captured
 2026-09-12 on `_6_.sav`.
+
+Four more top-level entries, captured 2026-09-26 (`--phases
+pool_panel,recall,load_skip,load_deploy`; the tool stages `_2_`, `_6_` and
+`_31_.sav` from `tests/fixtures/saves/` into the copy before each phase) and
+merged into the same file:
+
+* `pool_panel` -- open question 2: the unit panel's painter `0x004756D0` over
+  `_31_.sav`'s pool record and over a recruit `aEnlargeUnitPool` makes at the
+  anchor, each as loaded and with `+0x3D` written 0; the painted pixels with
+  their RGB565 values, and the pool row before and after the recruit.
+* `recall` -- open question 3: `_2_.sav`'s four marines taken back one by one,
+  `[hp, player, +0x4F]` of every record after each step and after the two
+  `aBuildVisibleMap(0)` controls.
+* `load_skip`, `load_deploy` -- open question 4: turn counter, seat, latch,
+  map type and place selection before and after `aInitBattleGround` over a
+  loaded turn 0, with the pool emptied by a placement (and saved and loaded
+  back through slot 29) or left full.

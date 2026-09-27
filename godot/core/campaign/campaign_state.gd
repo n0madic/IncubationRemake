@@ -309,6 +309,7 @@ func recruit_preset(player: int, speech: int, preset: Dictionary,
 			DictRead.as_dict(equipment_rows.get(item, {})))
 			* Upgrade.TP_PER_SKILL_POINT)
 	unit.tp = charge
+	_refill_magazine(unit, weapon_row)
 	unit.hp = mini(Interact.MAX_HIT_POINTS_CAP,
 		hp_max + unit.ep / Interact.EXPERIENCE_PER_HIT_POINT)
 	# `0x0045BB86`: `+0x5A` caches `cost / 10`, so dismissing the preset
@@ -380,6 +381,7 @@ func buy_weapon(player: int, slot: int, weapon: int,
 		return _purchase(Upgrade.NO_POINTS)
 	var _paid: int = Upgrade.apply_weapon(unit, weapon, weapon_row,
 		not waive_skills)
+	_refill_magazine(unit, weapon_row)
 	# `0x0045ABAB` rewrites `+0x5A` with `0x004776E0`'s value of the whole
 	# kit. *equipment_costs* is optional for the callers that carry no
 	# table; they get the weapon-only value, which is what an unarmoured
@@ -403,7 +405,7 @@ func buy_weapon(player: int, slot: int, weapon: int,
 ## click removes the item and charges for it; the remake reaches removal
 ## through *Undo*, which is the button the original puts in the same place.
 func buy_equipment(player: int, slot: int, item: int,
-		item_row: Dictionary) -> Dictionary:
+		item_row: Dictionary, weapon_row: Dictionary = {}) -> Dictionary:
 	var unit: UnitState = roster.record(slot)
 	if unit == null:
 		return _purchase(Upgrade.NO_UNIT)
@@ -423,8 +425,23 @@ func buy_equipment(player: int, slot: int, item: int,
 	if not spend_points(player, cost):
 		return _purchase(Upgrade.NO_POINTS)
 	var _paid: int = Upgrade.apply_equipment(unit, item, item_row)
+	_refill_magazine(unit, weapon_row)
 	roster.put(slot, unit)
 	return _purchase(Upgrade.OK, cost, short)
+
+
+## The magazine half of `0x004759E0`, the full recompute `aBuyWeapon`
+## (`0x004756B6`) and `aBuyEquipment` (`0x00475669`) both end with: `+0x3D`
+## is refilled to the carried weapon's `mun`, doubled by Double Munition.
+## Without it a bought weapon keeps the old one's magazine and the panel
+## shows `7/10` (docs/43 section 5.5, `hud_probe.py` phase `pool_panel`).
+##
+## *weapon_row* is the balance row of the weapon the unit now carries; a
+## caller with no table passes none and the record keeps its magazine.
+static func _refill_magazine(unit: UnitState, weapon_row: Dictionary) -> void:
+	if not weapon_row.has("mun"):
+		return
+	unit.ammo = WeaponTable.fill_for(unit, DictRead.as_int(weapon_row["mun"]))
 
 
 ## The Upgrade screen's *Commend Unit* -- case 3 of `0x0045A770`.

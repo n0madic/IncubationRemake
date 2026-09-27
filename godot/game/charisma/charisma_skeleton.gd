@@ -60,13 +60,23 @@ var _visible: Dictionary[String, bool] = {}
 
 ## Pose `model` with `clip` at `time` in key-time units. A null clip is the
 ## bind pose.
+##
+## *rotations* is bone -> a 16-float matrix whose 3x3 **replaces** that bone's
+## local rotation, clip track or bind alike, while its translation still comes
+## from the position path: what `V100Part::Update` (`0x004A6807`) does with an
+## attached external rotation movement that outranks the clip's (docs/40
+## section 6.4) -- the attack's spine aim, `AttackAim.spine_local`.
 static func pose(model: CharismaModel, clip: CharismaClip,
-		time: float) -> CharismaSkeleton:
+		time: float, rotations: Dictionary[String, PackedFloat64Array] = {}
+		) -> CharismaSkeleton:
 	var out: CharismaSkeleton = CharismaSkeleton.new()
 	out._model = model
 	out._offset = model.animation_offset()
 	for bone: String in model.bones:
 		out._local[bone] = out._local_of(model, clip, bone, time)
+		if rotations.has(bone):
+			out._local[bone] = CharismaTrack.mat_with_translation(
+				rotations[bone], CharismaTrack.mat_translation(out._local[bone]))
 	for bone: String in model.bones:
 		out._accumulate(bone)
 	return out

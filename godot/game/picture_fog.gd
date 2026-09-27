@@ -43,6 +43,8 @@ var beams_until_hand_over: bool = false
 
 ## Slots the engine's own writes reveal for the rest of the replay.
 var _reveals: Dictionary[int, bool] = {}
+## Slot -> the state a take-back left standing ([method hold]).
+var _held: Dictionary[int, int] = {}
 
 
 ## Note what an event revealed, and clear the set where the engine's fog pass
@@ -52,6 +54,7 @@ func note_event(kind: String, slot: int, payload: Dictionary) -> void:
 	# door and a jump rebuild it too (docs/22 section 9.4's permanent sites).
 	if kind == "hand_over" or kind == "use" or kind == "warp":
 		_reveals.clear()
+		_held.clear()
 		return
 	for revealed: int in reveals_of(kind, slot, payload):
 		_reveals[revealed] = true
@@ -59,7 +62,27 @@ func note_event(kind: String, slot: int, payload: Dictionary) -> void:
 
 func clear() -> void:
 	_reveals.clear()
+	_held.clear()
 	viewer = -1
+
+
+## A take-back on the place interface: *states* is what the picture showed
+## before it, and it stands until [method release] or a hand-over.
+##
+## `aTransferUnitFromMapToPool` rebuilds no fog -- `aKillUnit`'s closure
+## reaches no visibility builder, and in the running original an alien only
+## the recalled soldier saw keeps its `+0x4F` (docs/43 section 5.5,
+## `hud_probe.py` phase `recall`) -- so what was spotted stays on screen
+## until the next placement (`0x00478DE4`) or the hand-over passes again.
+func hold(states: Dictionary[int, int]) -> void:
+	for slot: int in states:
+		if not _held.has(slot):
+			_held[slot] = states[slot]
+
+
+## The placement's own fog pass (`0x00478DE4`): the take-back's hold is over.
+func release() -> void:
+	_held.clear()
 
 
 func revealed() -> PackedInt32Array:
@@ -94,6 +117,9 @@ func states(shown: World, at: Dictionary[int, Vector2i] = {}) -> Dictionary[int,
 	for slot: int in _reveals:
 		if seen.has(slot):
 			seen[slot] = Visibility.FULL
+	for slot: int in _held:
+		if seen.has(slot):
+			seen[slot] = _held[slot]
 	return seen
 
 

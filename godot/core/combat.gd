@@ -413,9 +413,10 @@ static func end_turn_facing(state: MapState, units: Dictionary,
 ## thresholds are not each other's reciprocals. Measured by sweeping a full
 ## turn: facings 0 and 2, the two along y, span 67.38 degrees each; facings 1
 ## and 3, along x, span 53.13; the four diagonals span 29.75. So a unit can
-## stand up to **33.69 degrees** off the line to what it is looking at, which
-## is what [method UnitsView.aim_twist] measures and the picture turns a
-## shooter's waist by.
+## stand up to **33.69 degrees** off the line to what it is looking at. The
+## shooter's body is turned onto the exact line for the shot itself
+## (`0x0042CAC0`, docs/22 section 7.1 step 5); this octant is what stays in
+## `+0x46`.
 static func direction(x0: int, y0: int, x1: int, y1: int) -> int:
 	var dx: int = x1 - x0
 	var dy: int = y1 - y0

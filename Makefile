@@ -130,6 +130,7 @@ fixtures:
 	$(PYTHON) tools/presentation_gold.py --emit-death-cases tests/fixtures/presentation/cases_death.json --root $(GAME_ROOT)
 	$(PYTHON) tools/presentation_gold.py --emit-idle-cases tests/fixtures/presentation/cases_idle.json --root $(GAME_ROOT)
 	$(PYTHON) tools/presentation_gold.py --emit-special-cases tests/fixtures/presentation/cases_special.json --root $(GAME_ROOT)
+	$(PYTHON) tools/presentation_gold.py --emit-aim-cases tests/fixtures/presentation/cases_aim.json
 	$(PYTHON) tools/hud_tables.py --emit-cases tests/fixtures/hud/cases_hud.json --root $(GAME_ROOT)
 
 # The converted game data every build carries inside its own package, and how

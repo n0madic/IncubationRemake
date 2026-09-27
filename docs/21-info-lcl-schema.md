@@ -257,7 +257,7 @@ SetWeaponInfo2 (0, "W_LCG_0", 0,   1,    0,    "A");
 | +0x38 | 1 | 1 | 14 (`num[12]`) | **tech** level | header only |
 | +0x39 | 1 | 1 | 15 (`num[13]`) | **mun** — magazine size; `255` means the weapon never consumes ammo, and the subtraction below is skipped | confirmed: a new unit's ammo byte (`unit+0x3d`) is initialised from it (`0x00479cf0`); the `!= 255` guard is in `0x0046B450` |
 | +0x3a | 1 | 1 | 16 (`num[14]`) | **heat** — the heat *cap*, doubled by equipment 19 (`Cooler`). `255` disables the mechanic. Reaching it triggers the overheat roll | confirmed (`0x00475340`; see [`10` §5.12](10-lev-mission-format.md) and [`22` §8](22-combat-and-visibility.md)) |
-| +0x3b | 1 | 1 | 18 (`num[16]`) | **special** 0..6; the dispatcher `0x0046F7E0` decodes 1, 3, 4 and 5, `0x0046A270` decodes 6, and only 2 has no shipped carrier — see *`special` 1 is the bayonet* below | confirmed (`== 6` in `0x0046f7e0` and in `0x0046A270`, where it swaps the target cell for unit `+0x51`/`+0x52`; `!= 1` in `0x0042ff30`) |
+| +0x3b | 1 | 1 | 18 (`num[16]`) | **special** 0..6; the dispatcher `0x0046F7E0` decodes 1 to 5, `0x0046A270` decodes 6. Shipped rows: 1 on six weapons (three guns, three bayonets), 5 on weapon 24 `Dummy` only, 6 on weapon 25 `Spore Cannon` only; 2, 3 and 4 on none (`combat_tables.py` `capture.special_spread`). See *`special` 1 is the bayonet* below and [`43` §5.5](43-battle-hud.md) for 5 | confirmed (`== 6` in `0x0046f7e0` and in `0x0046A270`, where it swaps the target cell for unit `+0x51`/`+0x52`; `!= 1` in `0x0042ff30`) |
 | +0x3c | 1 | 1 | 12 (`num[10]`) | **AP** — action points per shot | confirmed: subtracted from `unit+0x15` before firing (`0x0040a440`); GUI text 130 `"Action Pts:"` |
 | +0x3d | 1 | 2 | 3 (`num[1]`) | **weapon toggle** — the id of this weapon's other firing mode; an involution over all 42 records, 26 fixed points and 8 pairs. `aToggleWeaponModes` (`0x0047a8c0`) is `unit[+0x3f] = weapon[+0x3d]`, and the engine only ever reverts, never toggles into a mode. See [`25` §7](25-turn-and-round.md) | confirmed |
 | +0x3e | 1 | 1 | 17 (`num[15]`) | **cost** in equipment points | confirmed (GUI text 122 `"Equipment Pts:"`; compared against the player's points before purchase in `0x00457da0`) |
@@ -355,7 +355,7 @@ be put on overwatch.**
 | 2 | weapon changes id if a unit with an energy pack stands next to the attacker *(marked untested by the authors)* |
 | 3 | after each fight the weapon id is changed |
 | 4 | set the defender's player id to the attacker's and zero all its action points |
-| 5 | copy the attacked unit into the unit pool if its unit-pool flag is set |
+| 5 | copy the attacked unit into the unit pool if its unit-pool flag is set — in the code, into the **target's own** player's row with 1 HP and no recompute, and the target is **killed** either way; carried by weapon 24 alone, which nothing shipped can hold ([`43` §5.5](43-battle-hud.md)) |
 | 6 | attack the defender's position of the last turn |
 
 ### `special` 1 is the bayonet — **[code] `0x0046F7E0`**
@@ -883,7 +883,7 @@ that later use them.
 | +0x4a | 1 | **secondary order parameter** | same |
 | +0x4b | 1 | 3D model instance handle | `0x00479ba0` passes it to `0x004052b0` together with `unitinfo[+0x6c]`, the `.3DI` name; every animation routine moves the unit through it |
 | +0x4c | 1 | unit type id (index into the `SetUnitInfo` table) | every `unitinfo[type*0x7e]` access |
-| +0x4d | 1 | **unit-pool flag** — `InsertUnit`'s fifth argument | non-zero means this unit may be captured into the player's unit pool: weapon `special` 5 (`0x0046f7e0`) and the two capture paths `0x00478f20` and `0x00463380` all test it before calling `0x00478c10`. `0` at all 413 shipped call sites |
+| +0x4d | 1 | **unit-pool flag** — `InsertUnit`'s fifth argument | non-zero means this unit may be captured into the player's unit pool: weapon `special` 5 (`0x0046f7e0`, into the hit unit's **own** row, [`43` §5.5](43-battle-hud.md)) and the two capture paths `0x00478f20` and `0x00463380` all test it before calling `0x00478c10`. `0` at all 413 shipped call sites |
 | +0x4e | 1 | group id | `InsertUnitWithGroup` writes it, `GetUnitsInGroup` and `GroupOnField` read it |
 | +0x51, +0x52 | 2 | the unit's x/y **at the start of the turn** | `0x004781c0` copies `+0x42`/`+0x43` into them each turn; weapon `special` 6 ("attack the defender's position of the last turn") reads them |
 | +0x55 | 1 | **speech-set id** | written by `LinkChrWithGroup`; selects the `Waves/Speech/<n>/<PREFIX>` set — see `docs/20-lcl-language.md` §7.4 |

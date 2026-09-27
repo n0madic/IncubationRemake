@@ -416,6 +416,8 @@ class LclWorld:
         if target is None:
             return None
         slot = self.free_slot()
+        if slot is None:
+            return None
         row = self.tables.units.get(type_id)
         unit = RuntimeUnit(
             slot=slot, player=player, type_id=type_id, x=target[0],
@@ -456,13 +458,14 @@ class LclWorld:
         return self.effect_state[at] not in (ctrlmapmod.OBSTACLE_FIRE,
                                              ctrlmapmod.OBSTACLE_MINE)
 
-    def free_slot(self) -> int:
-        """The lowest slot in 0..199 that holds no **live** unit.
+    def free_slot(self) -> int | None:
+        """``aInsertUnit`` ``0x00477830`` with slot -1: the lowest slot whose
+        hit points are 0, a named record included, or ``None``.
 
-        **UNVERIFIED.**  ``docs/20`` §7.4 records everything ``0x00479cf0``
-        writes and not which index it writes it to; the engine's array is 200
-        fixed records, so the lowest free one is the natural reading and it is
-        what both this model and ``godot/core/lcl/lcl_context.gd`` use.
+        Measured on ``_C_141`` (``turn_gold.py`` phase ``spawn``, 5/5;
+        ``docs/94`` §4): the engine **refuses** when that slot is the last one
+        (``cmp ebx, 0xC7``), and with none free writes one record past the
+        array.  Both are refused here, as ``UnitState.free_slot`` does.
 
         The rule matters more than the answer: a ``.lev`` carries *named* slots
         whose hit points are zero -- ``_C_140`` has two -- and "one past the
@@ -473,8 +476,8 @@ class LclWorld:
         for slot in range(UNIT_SLOTS):
             unit = self.units.get(slot)
             if unit is None or not unit.alive:
-                return slot
-        return UNIT_SLOTS - 1
+                return None if slot == UNIT_SLOTS - 1 else slot
+        return None
 
     def cells_with_actpt(self, low: int, high: int) -> list[int]:
         return [i for i, v in enumerate(self.actpt) if low <= v <= high]
@@ -1146,8 +1149,17 @@ def _c_platform(it: Interpreter, p: Params) -> str | None:
             if not (w.in_bounds(sx, sy) and w.in_bounds(tx, ty)):
                 continue
             src, dst = w.index(sx, sy), w.index(tx, ty)
-            w.cell_height[dst] = w.cell_height[src]
+            # ``0x00413049``..``0x00413074``: the effect object, the obstacle,
+            # the countdown and the field type go; the source keeps
+            # 0 / ``0xFF`` / 0.  **The height stays** on both cells -- measured
+            # with the source raised to 1600 (``docs/20`` §7.4 step 4).
+            w.effect_object[dst] = w.effect_object[src]
+            w.effect_state[dst] = w.effect_state[src]
+            w.effect_timer[dst] = w.effect_timer[src]
             w.ctrl_type[dst] = w.ctrl_type[src]
+            w.effect_object[src] = 0
+            w.effect_state[src] = ctrlmapmod.OBSTACLE_NONE
+            w.effect_timer[src] = 0
             unit = w.unit_on(sx, sy)
             w.unit_at[dst] = w.unit_at[src]
             if unit is not None:
@@ -1260,8 +1272,20 @@ def _c_foot_bridge(it: Interpreter, p: Params) -> str | None:
                 riders.append(unit)
     if len(riders) <= min_units:
         return None
+    # ``0x00414B96``..``0x00414BBF``: each cell becomes a hole, and a fire,
+    # mine or shield on it is freed first -- ``aDeleteSpecialObject`` on
+    # ``+0x0F``, then ``+0x0F`` = 0, ``+0x10`` = ``0xFF``, ``+0x0E`` = 0.  An id
+    # the guard refuses ends the sequence there (``0x004150BA``).
+    cells = w.ctrlmap()
     for cell in block:
         w.ctrl_type[cell] = CTRL_TYPE_DEEP_HOLE
+        if w.effect_state[cell] == ctrlmapmod.OBSTACLE_NONE:
+            continue
+        if not ctrlmapmod.delete_object(cells, w.effect_object[cell]):
+            return None
+        w.effect_object[cell] = 0
+        w.effect_state[cell] = ctrlmapmod.OBSTACLE_NONE
+        w.effect_timer[cell] = 0
     it.event("foot_bridge", x, y, frames, len(riders),
              *[unit.slot for unit in riders])
     for unit in riders:

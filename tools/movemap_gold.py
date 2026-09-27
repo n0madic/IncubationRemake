@@ -1296,8 +1296,14 @@ TRANSIENT_ERRORS = (
 
 def run_plan(game_copy: Path, dbgcall: Path, plan_text: str, name: str,
              attempts: int = DEFAULT_ATTEMPTS,
-             timeout: float = ATTEMPT_TIMEOUT) -> list[dict[str, Any]]:
-    """Write a plan into the copy, run it under Wine, return the JSONL rows."""
+             timeout: float = ATTEMPT_TIMEOUT,
+             call_timeout_ms: int | None = None) -> list[dict[str, Any]]:
+    """Write a plan into the copy, run it under Wine, return the JSONL rows.
+
+    *call_timeout_ms* is ``dbgcall``'s own ``--call-timeout`` (5000 ms when
+    left out): a routine that animates inside the call -- a seven-tile
+    ``Platform`` is ninety frames -- can outlast the default.
+    """
     plan_path = game_copy / f"{name}.plan"
     out_path = game_copy / f"{name}.jsonl"
     log_path = game_copy / f"{name}.log"
@@ -1320,7 +1326,8 @@ def run_plan(game_copy: Path, dbgcall: Path, plan_text: str, name: str,
     inner = (
         f'{_command_name(dbgcall, game_copy)} Incubation.exe '
         f'--bp {BREAKPOINT} '
-        f'--plan {name}.plan --out jsonl -o {name}.jsonl -- -english '
+        + (f'--call-timeout {call_timeout_ms} ' if call_timeout_ms else '')
+        + f'--plan {name}.plan --out jsonl -o {name}.jsonl -- -english '
         f'> {name}.log 2>&1'
     )
     env = dict(os.environ, WINEDLLOVERRIDES=WINE_OVERRIDES)

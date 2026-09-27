@@ -1035,13 +1035,26 @@ func _foot_bridge(instr: Dictionary) -> void:
 				riders.append(rider)
 	if riders.size() <= _n(instr, 3):
 		return
-	if _context.in_bounds(x, y):
-		var found: int = _context.state.find_land_object(
-			_context.marker(x, y), FOOT_BRIDGE_BOX)
-		if found != MapState.NO_LAND_OBJECT:
-			var _gone: bool = _context.state.delete_land_object(found)
+	# `0x00414B96`..`0x00414BBF`: each cell becomes a hole, and a fire, mine
+	# or shield standing on it is freed first -- the object slot through
+	# `aDeleteSpecialObject`, then `+0x0F` = 0, `+0x10` = `0xFF`, `+0x0E` = 0.
+	# An id the guard refuses ends the sequence there (`0x004150BA`).
+	var state: MapState = _context.state
 	for cell: int in block:
-		_context.state.set_field_type(cell, CTRL_TYPE_DEEP_HOLE)
+		state.set_field_type(cell, CTRL_TYPE_DEEP_HOLE)
+		if state.obstacle_at(cell) == MapState.OBSTACLE_NONE:
+			continue
+		if not CellObjects.delete_object(state,
+				state.effect_at(MapState.OBJECT_SLOT, cell)):
+			return
+		state.set_effect(MapState.OBJECT_SLOT, cell, 0)
+		state.set_obstacle(cell, MapState.OBSTACLE_NONE)
+		state.set_effect(MapState.TIMER_SLOT, cell, 0)
+	if _context.in_bounds(x, y):
+		var found: int = state.find_land_object(_context.marker(x, y),
+			FOOT_BRIDGE_BOX)
+		if found != MapState.NO_LAND_OBJECT:
+			var _gone: bool = state.delete_land_object(found)
 	var values: Array = [x, y, _n(instr, 2), riders.size()]
 	for rider: UnitState in riders:
 		values.append(rider.slot)

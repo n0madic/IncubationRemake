@@ -1023,7 +1023,8 @@ its last slot to the save's 5460-byte write is row 1, whatever it is called.
 
 `aAddUnitToUnitPool(player, unit)` `0x00478C10` copies the record verbatim into
 the first free slot and, **only** when there is more than one human player or
-the mode is `net session`, re-randomises `+0x55` (speech). In the campaign it
+the mode is `net session` — and the session flag `0x0043B270` is set as well
+(`0x00478CBB`) — re-randomises `+0x55` (speech). In the campaign it
 never fires, so a soldier keeps their voice.
 
 One `aMissionControl.cpp` site (`0x0045C0DE`) **sorts** the row: `0x00478630`

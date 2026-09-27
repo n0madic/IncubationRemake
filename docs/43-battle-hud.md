@@ -456,9 +456,11 @@ frame handler, [`25` §4](25-turn-and-round.md) — was what advanced the counte
 so a first entry would find it at 0)*. It is the **counter-1** arm, and both of
 its two entries are named:
 
-* `aInitBattleGround`'s own first lines set the counter to 1 when there is
-  nobody to place — `if (poolCount(currentPlayer) == 0 && turnCounter() == 0
-  && gameMode() == 1) setTurn(1);` at `0x0041A073`. That is the arm a mission
+* `aInitBattleGround` sets the counter to 1 when there is nobody to place —
+  `if (poolCount(currentPlayer) == 0 && turnCounter() == 0 && mapType() ==
+  1) setTurn(1);` at `0x0041A073`, after its autosaves (§5.5; the third test
+  was read as `gameMode()` until 2026-09-26 — `0x00419AC0` is the `.lev`
+  header's map type). That is the arm a mission
   which ships its own squad takes (`_C_140`, where
   `aCreateUnitPoolForCampaign(2)` is a bare return, [`27` §3.1](27-campaign.md)).
 * Otherwise the counter is 0, the placement interface goes up
@@ -778,10 +780,89 @@ They go into `0x514040..0x51406C`, and then the selection: `[0x514064]` is
 **−1** otherwise (`0x00463355..64`). The painter `fcn.00463730` restores the
 panel plate (`0x004758F0` at (60, 415)) and, with a record selected, calls
 **the unit panel's own painter** `0x004756D0` (§5.3) on the pool record —
-`0x51F2A0 + (player · 31 + index) · 90` — with the same `(60, 415, 0)` and
-the same font twice. So the pool soldier is drawn exactly as a placed one
-would be, raw fields and all: a fresh recruit's `+0x3D` is 0 and the panel
-would print `-/-` or *Out of ammo!* over him (open question 3).
+`0x51F2A0 + (player · 31 + index) · 91` (the `lea` pair at
+`0x0046379E`..`0x004637A4` is `eax + 90·eax`, the unit stride) — with the
+same `(60, 415, 0)` and the same font twice. So the pool soldier is drawn
+exactly as a placed one would be, raw fields and all.
+
+**And a pool record's magazine is full** *(2026-09-26, closing open question
+2)*. The earlier reading had a fresh recruit's `+0x3D` at 0 until the
+placement's recompute; it is not. `aEnlargeUnitPool` ends with the **full**
+recompute `0x004759E0` on the new record (`0x00478B4A`, `push ebp` with `ebp`
+the record, [`27` §3.2](27-campaign.md)), and that routine writes `+0x3D` from
+`0x004752A0` (`mov [esi+0x3D], al` at `0x00475A48`); `aBuyWeapon` and
+`aBuyEquipment` end with the same call (`0x004756B6`, `0x00475669`), the
+preset builder buys through them, and the mission end's transfer runs it
+again (`0x00478EA1`). No instruction addresses the pool's `+0x3D`
+absolutely (`0x0051F2DD` occurs nowhere in `.text`). Measured natively by
+`tools/hud_probe.py`'s `pool_panel` phase, which runs the painter
+`0x004756D0` at the anchor into a private surface (it takes the destination
+and the stride, as the overlay does) and reads the text back with
+`font_0`'s glyph bodies:
+
+| record painted | `+0x3D` | name line | weapon block's `ammo/max` |
+|---|---|---|---|
+| `_31_.sav`'s Sgt. Bratt, as loaded (weapon 2) | 10 | *Sgt. Bratt*, no status word | `10/10` white |
+| the same with `+0x3D` written 0 | 0 | *Sgt. Bratt* and a red *- Out of ammo!* | `0/10` red |
+| *Soldier 2*, made by `aEnlargeUnitPool(0)` at the anchor (weapon 0) | **7** | *Soldier 2*, no status word | `7/7` white |
+| the same with `+0x3D` written 0 | 0 | a red *- Out of ammo!* | `0/7` red |
+
+So the place interface shows a recruit loaded, and the red *Out of ammo!*
+reading was the listing applied to a record no path produces.
+
+**The one path that skips the recompute is dead in the shipped data.** Weapon
+`special` 5 — *"copy the attacked unit into the unit pool if its unit-pool flag
+is set"* in `Info.lcl`'s own comment ([`21` §6](21-info-lcl-schema.md)) — is
+the weapon dispatcher `0x0046F7E0`'s phase-2 arm, which `aAttackUnit` calls at
+`0x0046BE1C` for each unit a shot hit, and only when `applyDamage` dealt it
+something (`0x0046BE0E`: `jbe` over the call on a zero dealt byte, so a miss,
+a stun, a spent absorber charge or the immune type `0x23` never reaches it).
+Read from the bytes (not run natively):
+
+```c
+/* 0x0046F861, case 5; `t` is the dispatcher's second argument, the unit hit */
+if (t[+0x4D]) {                         /* pool candidate or hero            */
+    t[+0x16] = 1;                       /* the pool slot's occupied byte     */
+    aAddUnitToUnitPool(t[+0x45], t);    /* 0x00478C10, the TARGET's own row  */
+}                                       /* full pool: reporter, a bare ret   */
+t[+0x16] = 0;                           /* 0x0046F89A, on every path         */
+```
+
+So it takes the **target**, not the shooter, and into the target's **own**
+player's row — the shooter's side gains nothing. The copy is the whole 91-byte
+record as it stands in play with hit points forced to 1: magazine `+0x3D`,
+heat, action state, position and object slot all verbatim, no `0x004759E0`.
+`aAddUnitToUnitPool` admits rows `0..slotCount()` (`jg`, so row 1 — the
+mission-entry snapshot, [`27` §3.5](27-campaign.md) — passes in a campaign
+where the count is 1; aliens at 255 and props at 252 are refused), takes the
+first of 30 slots whose `+0x16` is 0, drops the copy silently when the row is
+full, and rerolls `+0x55` only with two human players or game mode 2 *and*
+the multiplayer session flag `0x0043B270` set ([`25`](25-turn-and-round.md)
+open item 2), never in a campaign. No game
+mode, player or turn test guards the arm itself. **The shot then kills
+whatever it hit**, flag or no flag: the live `+0x16` is 0, so the kill test
+right after the call (`0x0046BE4F`) marks the cell `0x5D`, the shooter is
+credited as for any kill, and the sweep's `aRemoveUnitElement` takes the unit
+off the map — which also bumps the owner's `HeroKilled` byte for a `+0x4D`
+2 unit on a non-zero turn ([`22` §9.5](22-combat-and-visibility.md)), though
+its copy sits in the pool.
+
+Nothing shipped can fire it. The one `SetWeaponInfo` row with `special` 5 is
+weapon 24, `Dummy`; no unit type defaults to it (0 of 36), no toggle or `param`
+names it, none of the 1863 placed units in the 155 `.lev` files holds it (nor
+any live unit in the six fixture saves' embedded maps, read once by hand),
+and the catalogue sells ids below 20 only
+([`27` §5.2](27-campaign.md)). `combat_tables.py`'s `capture.*` (21 checks)
+pins the arm, its caller's two gates, the pool routine's bounds and all five
+reach facts. A record in the place interface's list therefore always
+carries a full magazine in the shipped game; only an authored `.lev` or a
+modified `Info.lcl` that hands a unit weapon 24 could put a spent one there.
+**The remake does not implement the arm**, nor weapon `special` 4's
+(`0x0046F8A8`, the target changes sides): `Combat.attack` has no phase-2
+weapon-special dispatch, and with no shipped carrier for either there is
+nothing the omission changes. A mod-compatible hook would sit after the
+weapon-47 conversion, gated on damage dealt, as the caller's own
+`0x0046BE0E` is.
 
 **The click handler `fcn.00463380(x, y)`** is called from the mission's
 left-click path at `0x0041BEC8`, *after* the ordinary handler `0x004714B0`
@@ -791,7 +872,7 @@ neither its selection (§4.5) nor its magnifier arm (`0x0047156D`) runs on
 turn 0 — and it returns 0 at once unless the turn counter is 0
 (`0x00463382`). The remake's `_pick` returns into `_deploy_click` on the
 same gate, before its own magnifier arm. The counter alone: the
-`gameMode() == 1` test belongs to `0x0041A073`'s skip arm, not here, so an
+map-type test belongs to `0x0041A073`'s skip arm, not here, so an
 *Instant Action* mission deploys through the same clicks. Its three arms:
 
 | arm | where | what |
@@ -799,6 +880,37 @@ same gate, before its own magnifier arm. The counter alone: the
 | the band | `fcn.004637C0`: y strictly between 385 and 459 (`0x004637D1`, `0x004637C5`); x strictly between 47 and 220 (`0x004637E9`, `0x004637DD`) answers **2**, x strictly between 220 and 394 (`0x004637F9`, `0x00463805`) answers **1** | 2 → `0x0046363D`, the **previous** record, index − 1 wrapping to `count − 1`; 1 → `0x004636B7`, the **next**, index + 1 wrapping to 0 (`0x00463700`). Both play `[0x51406C]` and do nothing at all with no selection (`je 0x46371D`). **x 220 answers nobody**, a dead column between the halves |
 | a unit on a landing cell | inside the window, `fcn.0042F730(x, y)` gives the cell; its state byte must be **70…73** (`0x00463437..43`, `markDeploymentCells`' `0x46 + player`, [`29` §1.2](29-interface-contract.md)) or the click is ignored; `cell[+7] != 0xFFFF` and `unit[+0x4D] >= 1` (`0x00463485`) | `[0x514068]` plays, `aTransferUnitFromMapToPool(player, x, y)` `0x00478F20` (`0x004634C7`); a selection of −1 becomes 0 (`0x004634F8`); redraw and the HUD refresh `0x0041D6A0(1)`. A mission's own soldier (`+0x4D` 0) is simply ignored |
 | an empty landing cell | the same cell test, `[0x514064] != -1` | `[0x514068]` plays; the **facing is the screen quadrant of the click**: `fcn.00419A50/60` (`0x00463552/60`) are the screen's width and height, halved, and the left column is `4 + 2 · (y < half)` (`0x00463572/75`), the right `7 − 2 · (y < half)` (`0x0046358E/91`) — left-bottom 4, left-top 6, right-top 5, right-bottom 7; then `aTransferUnitFromPoolToMap(player, index, x, y, facing)` `0x00478D10` (`0x004635AB`, twenty bytes cleaned at `0x004635B0` — **five** arguments, which corrects [`27` §3.4](27-campaign.md)); the HUD refresh; and the selection clamped — −1 when the pool is now empty (`0x004635EF`), the same index while it exists, else `count − 1` (`0x004635E3..0x00463605`) |
+
+**A take-back rebuilds no fog** *(2026-09-26, closing open question 3)*.
+The placement does — `aTransferUnitFromPoolToMap` calls `aBuildVisibleMap`
+for the current player at `0x00478DE4`, one of [`22` §9.4](22-combat-and-visibility.md)'s
+nineteen — and its mirror does not. `aTransferUnitFromMapToPool` is the
+survival gate of [`27` §3.4](27-campaign.md) followed by `aKillUnit`
+`0x00472920(cell x, cell y)` (`0x00478FF9`), which is a network send when
+`0x004738F0` says so and then `0x004779C0`: bump the owner's hero counter
+(`+0x4D >= 2` on a turn past 0), delete the body (`aDeleteStd` `0x00405350`),
+unlink the id from the control map (`aWriteUnitIdInfoCtrlMap(id, 0xFFFF, 0)`
+`0x0047A240`) and write `+0x16 = 0`. The arm then repaints the panel
+(`0x00463730`) and calls `0x0041D6A0(1)`, which only stores 1 into the
+refresh flag `[0x004FE360]` the frame loop and the click path read. The
+static call closure of the three — 73 routines, the transfer's 27 and the
+tail's 46 — is closed and contains none of `aBuildVisibleMap`,
+`aBuildVisibleMapForUnit` or `aSetVisibleStateForUnit`; the assert
+reporter `0x00453E00` they all call is a bare `ret`, and the closure's eight
+indirect calls are COM/vtable calls into the renderer and Charisma objects
+(`0x00405442`, `0x00406055`, four in `0x004960F5`) and the network send's
+(`0x00435BAD`). `hud_tables.py` pins it (`place.take_back_*`, 7 checks).
+
+Measured natively too: `hud_probe.py`'s `recall` phase loads `_2_.sav`
+(`_C_140`, turn 10), takes Knox back from (11, 8), reads all 200 records,
+then calls `aBuildVisibleMap(0)` as the control. The take-back moves **no**
+`+0x4F` (0 of 12 living aliens); the control then turns the Ray'Ther at
+(12, 13) from 0 to **1** — Knox was the only one with it in sight, and
+only a scanner contact is left. The other three marines' take-backs move
+nothing either, and the second control over a side with nobody on the map
+hides all twelve (state 3). So after a take-back the original keeps showing
+what the recalled soldier saw until the next fog pass — the next placement
+(`0x00478DE4`) or the hand-over's refresh (`0x004781C6`).
 
 The dots themselves are §3.1's: `markDeploymentCells` runs for the incoming
 player while the counter is 0 and leaves every cell whose action point is
@@ -813,24 +925,71 @@ wipeout test is gated on `turnCounter() > 0` ([`27` §6](27-campaign.md)), so
 the button over an **empty** map hands over anyway and the player loses on
 turn 1.
 
-**A load re-enters the same two arms.** The load command reaches
-`aInitBattleGround` again (`0x0041DABD` → `0x0042E811` → `0x00419D90`), so a
-save carrying turn 0 comes back into the place interface when the pool
-still holds anybody, and onto turn 1 through `0x0041A073`'s silent
-`setTurn(1)` when it does not — and only in a campaign game: the arm's
-first test is `gameMode() == 1`, so an *Instant Action* save on turn 0 with
-the whole squad placed comes back into the place interface over an empty
-pool, selection −1, and *Next player* is its way out (the remake's
-`_may_skip_deployment` carries the same three tests). **`_31_.sav`, *Undo
-mission*, is written before the deployment**, not after it: the retail
-fixture (`tests/fixtures/saves/_31_.sav`, [`11` §5.8](11-save-game-format.md))
-carries turn 0 with its one soldier in the live row *and* in the entry
-snapshot, and `_6_.sav`, the same session one turn on, has him in the
-snapshot alone. So *Undo mission* always lands in the place interface with
-the whole pool to place again, and leaves it through the hand-over —
-`_C_106`'s ride included. The silent arm is reached by a load only through a
-save the player took on turn 0 after placing everybody, and that one runs
-no `NEXT TURN`; verified static, open question 4 holds the runtime half.
+**A load re-enters the same two arms** *(runtime half measured 2026-09-26,
+closing open question 4)*. The load command sets program state 7
+(`0x0041DAB5`), and the controller's state-7 arm is `aInitBattleGround`
+(`0x0042E811`; the jump table `0x0042E868` sends state 7 to index 3,
+`0x0042E807`). It does **not** pass through state 16, `aInitViewPlayer`
+`0x0047BCF0` — the routine whose tail is a mission's first
+`aNextPlayerHandling` (`0x0047C15D`), set up by the new-mission paths
+`0x0044A742`/`0x0044A7B3` right after they clear the latch (`0x0047BCD0`).
+So a load makes **no** hand-over at all, and the latch it restores is the
+save's: `0x005229D0` is 1 in 9 of 9 retail saves read for it, the four
+turn-0 ones included (the six fixtures, and the retail tree's own `_31_`,
+`_33_` and `_6_` in `Work/Saves2`).
+
+`aInitBattleGround`'s head then runs, in this order: text module 0
+(`0x00470B50`), **the autosaves** — `aSaveGame(31)` when `gameMode() == 1`
+and the turn is 0 (`0x00419DF7`), `aSaveGame(33)` for player 0's seat
+(`0x00419E2F`, and unconditionally outside the campaign, `0x00419E49`), and
+the deletion of slot 32 on turn 0 (`0x00419E75`) — the sounds, and only
+then the skip at `0x0041A05C`..`0x0041A087`:
+
+```c
+if (poolCount(currentPlayer()) == 0 && turnCounter() == 0
+        && mapType() == 1)                       /* 0x00419AC0, not gameMode */
+    setTurn(1);                                  /* 0x0043B290 */
+```
+
+**The third test is the map type, not the game mode** (corrected
+2026-09-26): `0x00419AC0` returns the byte `[0x004FD0F2]`, which is the
+`.lev` header's `+0x222` (the new-map path writes 2 there beside the scene
+name at `+0x244`, `0x0041993A`/`0x00419945`), 1 = *Campaign* in
+[`10` §3](10-lev-mission-format.md). For the shipped corpus the two readings
+agree — every `_C_*` battle map in `Missions/` is type 1 (75/75; `_C_XXX`
+and `_C_YYY` are type-4 screens) and the ten `_S_*` maps *Instant Action*
+lists are type 2 (10/10) — so an *Instant Action* save on turn 0 with the
+whole squad placed still comes back into the place interface over an empty
+pool, selection −1, with *Next player* its way out.
+
+`hud_probe.py`'s `load_skip` phase runs that path natively: `_31_.sav`
+loaded, Sgt. Bratt placed on (1, 1) — the pool now empty —, the game saved
+to slot 29 and loaded back, and `aInitBattleGround` called (it returns 1,
+with text module 0's pointer cleared first, which the front end holds at the
+anchor). The counter goes **0 → 1**, the seat stays 0, the latch stays 1 and
+the place selection `[0x514064]` is −1; `load_deploy`, the same without the
+placement, stays on turn 0 with the selection 0. And the head's autosaves
+land **before** the skip: slots 31 and 33 are rewritten with turn 0 and an
+empty live row. So after loading such a save:
+
+* no `NEXT TURN` for turn 1 runs, ever — the counter is set, not advanced,
+  and no hand-over is made;
+* the first *Next player* takes `handOver(0)` (the latch is spent): `NEXT
+  PLAYER` with `_B = 1`, the computer's turn 1, then `advanceTurn` and
+  `NEXT TURN` with `_B = 2` before the player's turn 2 (docs/25 §4). On
+  `_C_106` the ride (`Platform (19,2,2,11)`, gated on action point (0,0)
+  being 101 and not on the turn) therefore runs **one round late**, at the
+  top of turn 2, instead of never — static, from the script and §4;
+* *Undo mission* now returns to that save's state, not to the mission's
+  entry: slot 31 was just rewritten with the emptied pool.
+
+**`_31_.sav`, *Undo mission*, is otherwise written before the deployment**:
+the retail fixture (`tests/fixtures/saves/_31_.sav`,
+[`11` §5.8](11-save-game-format.md)) carries turn 0 with its one soldier in
+the live row *and* in the entry snapshot, and `_6_.sav`, the same session
+one turn on, has him in the snapshot alone. So *Undo mission* from a fresh
+mission lands in the place interface with the whole pool to place again,
+and leaves it through the hand-over — `_C_106`'s ride included.
 The remake writes slots 31 and 33 as the interface goes up
 (`_open_deployment_or_start`), for the same reason — an earlier draft wrote
 them at the hand-over, with the pool emptied, and *Undo mission* then skipped
@@ -857,6 +1016,23 @@ pause menu's abandon entry is the way off a turn-0 map, captioned *Back* and
 routed to the HQ in *Instant Action*. `Menu_a` window 10's *Infos* button
 (`0x0044EEDA`, the multiplayer level options) is not on this path, which is
 why no briefing box is drawn over the deployment ([`24` §7.1](24-briefing-text.md)).
+
+**The remake follows the 2026-09-26 measurements** (changed the same day):
+`World.recall_from_map` no longer rebuilds the fog, and the picture -- which
+otherwise answers every rebuild with a fresh pass (`PictureFog`) -- holds what
+it showed before the take-back (`PictureFog.hold`) until the next placement
+(`release`, `0x00478DE4`) or the hand-over, so a spotted alien stays on screen
+as it does in the original (`test_shell.gd`'s `deploy.a_take_back_keeps_the_fog`,
+mutation-checked); `CampaignState.buy_weapon`,
+`buy_equipment` and `recruit_preset` refill `ammo` for the new kit the way
+the closing `0x004759E0` does; `World.load_save` restores the latch as spent
+on every load; and `_open_after_load`'s silent arm is `setTurn(1)` alone, with
+no `World.open_mission`. `test_campaign.gd` pins the first three
+(`recall_leaves_the_fog`, `weapon_purchase_refills_the_magazine`,
+`load_restores_the_spent_latch`), each mutation-checked against the old rule.
+One difference is left as it is: `_may_skip_deployment` tests the game mode
+where the engine tests the map type. The two give the same answer on every
+shipped map.
 
 ## 6. The radar — `fcn.00451E50`
 
@@ -1096,7 +1272,8 @@ face). The four fonts' rows are the same 13/13/20/10 the cache's
 ## 9. Verification
 
 ```bash
-python3 tools/hud_tables.py --check gog_incubation          # 217 checks
+python3 tools/hud_tables.py --check gog_incubation          # 223 checks
+python3 tools/hud_probe.py --check tests/fixtures/hud/hud_probe.json  # 51, needs a capture
 python3 tools/hud_tables.py --emit-cases tests/fixtures/hud/cases_hud.json --root gog_incubation
 bash godot/run_tests.sh                                       # test_hud.gd
 ```
@@ -1113,7 +1290,9 @@ interface of §5.5 — its raise from `aInitBattleGround`, the pool count and
 the −1/0 selection store, the two click calls in their order, the counter
 gate, the band's six bounds and two answers, the two arms and their wrap
 calls, the screen-size calls and the facing arithmetic, the five-argument
-transfer, the take-back and the −1 store, and the four sound sites; the
+transfer, the take-back and the −1 store, the four sound sites, and the
+take-back's 73-routine call closure, closed and free of every `+0x4F`
+writer (`place.take_back_*`, §5.5); the
 columns' rectangle, three dispatch tables, caption position and draw; the radar's
 clip, centre, scale, coordinate map, compass table, lamp and zoom click;
 the window's four writes, the strips, the turn text and the par calls; the
@@ -1206,6 +1385,18 @@ the verbs kept their names.)
   `map[15 / 12 / 9]` and the selected one `map[14 / 11 / 8]` by the location's
   action-point band (1..8 or 210..217 / 10..24 / 50..129), with its name
   written beside it. The remake's dots-by-kind stay as they are (decision D6).
+
+Added 2026-09-26, from §5.5:
+
+* [`98`](98-slice-6-report.md) (the `0x0041A073` block) and
+  [`92` §7.4](92-remake-architecture.md) — the skip's third test is
+  `mapType() == 1` (`0x00419AC0`, the `.lev` header's `+0x222`), not
+  `gameMode() == 1`; and a load makes no `handOver(1)`: the latch is saved
+  and every retail save carries 1.
+* [`11` §2](11-save-game-format.md) — the three `aSaveGame` calls at
+  `0x00419DF7`/`0x00419E2F`/`0x00419E49` and the slot-32 deletion are
+  `aInitBattleGround`'s head, so they run again on every load into a
+  mission, not only at its start.
 
 ## 11. Decisions
 
@@ -1381,29 +1572,69 @@ Wine session that answers question 1 would take it.~~ **Closed by decision,
 remake's panel has been played through the whole campaign by the project
 owner, and no frame of the original is going to be taken for it.
 
-Three new ones with §5.5 (2026-09-13), all open in principle until a frame
-or a probe of the original is taken:
+Three new ones with §5.5 (2026-09-13), opened as needing a frame or a probe
+of the original; all three were probed on 2026-09-26 and are closed:
 
-2. **What the panel prints over a fresh pool record.** `fcn.00463730` feeds
+2. ~~**What the panel prints over a fresh pool record.** `fcn.00463730` feeds
    the pool record to `0x004756D0` unchanged, and a recruit's `+0x3D` is 0
    until the placement's recompute fills it ([`27` §3.4](27-campaign.md)),
    so by the listing the panel shows `0/max` in red and the status word
    *Out of ammo!* over a soldier who has not been placed. The remake draws
    what the listing says. Settles with one frame of the original's turn 0
-   over a recruit.
-3. **Whether `aKillUnit` rebuilds visibility on a take-back.**
+   over a recruit.~~ **Closed 2026-09-26: the premise was wrong.** A recruit's
+   magazine is full: `aEnlargeUnitPool` ends with the full recompute
+   (`0x00478B4A` → `0x004759E0`, which writes `+0x3D` at `0x00475A48`), as
+   do both purchase routines. The painter run natively into a private
+   surface (`hud_probe.py` `pool_panel`, 11 checks) prints *Soldier 2* with
+   no status word and `7/7` in white for a recruit made at the anchor, and
+   `10/10` for `_31_.sav`'s Sgt. Bratt; the red *- Out of ammo!* and `0/max`
+   appear only with `+0x3D` written 0 (§5.5). The one path without the
+   recompute, weapon `special` 5, is carried by no weapon a shipped unit can
+   hold (item 5 below, closed).
+3. ~~**Whether `aKillUnit` rebuilds visibility on a take-back.**
    `aTransferUnitFromMapToPool` (`0x00478F20`) calls it after the pool
    insertion; the remake's `recall_from_map` rebuilds the fog the way the
    placement does, which is the conservative reading. A `dbgcall` phase that
    places, recalls and reads `+0x4F` of a unit the recalled soldier alone
-   could see would settle it.
-4. **What a load with an emptied pool does at runtime.** §5.5's reading of
+   could see would settle it.~~ **Closed 2026-09-26: it does not.** The
+   take-back's 73-routine call closure contains none of the three `+0x4F`
+   writers (`hud_tables.py` `place.take_back_*`), and natively
+   (`hud_probe.py` `recall`, 7 checks) taking Knox back from `_2_.sav`
+   moves no `+0x4F` while the control `aBuildVisibleMap(0)` right after
+   turns the alien he alone saw from 0 to 1 (§5.5). The fog stays as it was
+   until the next placement or hand-over.
+4. ~~**What a load with an emptied pool does at runtime.** §5.5's reading of
    `0x0041DABD` → `0x0042E811` → `0x00419D90` is static: `0x0041A073` sets
    the counter to 1 when the pool is empty, and the re-entry latch the save
    restores means the first `aNextPlayerHandling` takes the `handOver(1)`
-   arm, so no `NEXT TURN` runs. *Undo mission* does not reach it — `_31_.sav`
-   is written with the pool full (§5.5) — so the case is a manual save
-   taken on turn 0 after everybody was placed, on `_C_106`: whether loading
-   it in the original leaves the platform standing is one Wine run of the
-   retail game away; the remake follows the reading and says so in
-   `_open_after_load`.
+   arm, so no `NEXT TURN` runs.~~ **Closed 2026-09-26.** `aInitBattleGround`
+   over a loaded turn-0 save with the pool emptied by a placement, run
+   natively (`hud_probe.py` `load_skip` / `load_deploy`, 10 checks), moves
+   the counter 0 → 1 with the seat and the latch untouched and the place
+   selection −1; with the pool full it stays on 0. Two parts of the old
+   reading were wrong and are corrected in §5.5: the skip's third test is
+   the **map type** (`0x00419AC0`, the `.lev` header's `+0x222`), not the game
+   mode; and the latch a save restores is **1** (9/9 retail saves), so the
+   player's first *Next player* after such a load takes `handOver(0)` — `NEXT
+   PLAYER` for turn 1, the computer's turn, then `NEXT TURN` for turn 2. On
+   `_C_106` the ride therefore comes one round late rather than never; that
+   last step is read from the script and [`25` §4](25-turn-and-round.md),
+   not run (the probe stops after `aInitBattleGround`). The same head also
+   rewrites slots 31 and 33 before the skip, so *Undo mission* then returns
+   to the emptied pool.
+
+One new one from those probes (2026-09-26):
+
+5. ~~**Can a pool record carry a spent magazine?** Every path into the pool
+   read here ends with `0x004759E0` or copies a record that did, except
+   weapon `special` 5's arm at `0x0046F877`, which hands a live map unit to
+   `aAddUnitToUnitPool` with `+0x16` written 1 and no recompute. Which unit
+   it takes (shooter or target) and whether any weapon a campaign can hold
+   carries `special` 5 were not read.~~ **Closed 2026-09-27: not in the
+   shipped game.** The arm takes the unit the shot **hit**, copies it into
+   its **own** player's row with 1 hit point and its in-play magazine, and
+   then kills it on the map whether or not it copied (§5.5). Its only
+   carrier is weapon 24, `Dummy`, which no unit type, toggle, `param`,
+   placed unit (0/1863) or catalogue (ids < 20) reaches —
+   `combat_tables.py` `capture.*`. Read statically; the arm was not run
+   natively, since no shipped arrangement fires it.

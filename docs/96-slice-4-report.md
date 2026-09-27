@@ -113,7 +113,10 @@ would otherwise accept anything close.
 
 **Where the engine applies it is UNVERIFIED.** It is not `StdModel`'s scale —
 §6.2 shows that defaults to `(1, 1, 1)` and no shipped file changes it — so it
-lives in the Charisma-to-Eng3d bridge, which is not decompiled. The number is
+lives in the Charisma-to-Eng3d bridge, which is not decompiled. **Closed 2026-09-26** ([`40` §5.3](40-charisma-model-animation.md)):
+`V100Part`'s `SetLocalMatrix` `0x004a625c` multiplies the translation by
+`16.0` on the way into Eng3d, and every placement divides by 16 on the way in
+(`0x0042c890`). The number is
 verified; its origin is not.
 
 ## 4. The oracle boundary, fixed downwards and on purpose
@@ -380,6 +383,10 @@ None opened by this slice. One is **narrowed**:
   §3's four models stand on the ground to within 0.04 mm under the rule
   `cho_export.py` uses, and a different disposition of the root matrix would
   move the whole figure.
+  **Closed 2026-09-26** ([`40` §5.2](40-charisma-model-animation.md)): the
+  live path `0x0049fccf` → `StdPart::ConstructPart` `0x0049cfb4` sets the
+  node's own matrix as the root bone's local transform, and
+  `StdPart::GetWorldMatrix` `0x0049db84` answers identity above it.
 
 One is **added** to §5.3 rather than to the open list, because it is a number
 that is verified with an origin that is not: **where** the engine applies the

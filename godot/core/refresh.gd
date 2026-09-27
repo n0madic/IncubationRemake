@@ -124,9 +124,9 @@ static func stimulant_charge(unit: UnitState) -> int:
 ## one every roster path funnels through: `aEnlargeUnitPool` ends with it,
 ## `aTransferUnitFromPoolToMap` calls it on the record it has just placed
 ## (`0x00478DD1`, before the pool removal) and `aTransferAllUnitsFromMapToPool`
-## calls it on every survivor (`0x00478EA1`). It is what fills a magazine --
-## a roster record carries no ammunition byte of its own, so a squad deployed
-## from the pool without this reaches the map with an empty weapon.
+## calls it on every survivor (`0x00478EA1`). It is what fills a magazine: a
+## pool record does carry `+0x3D`, but only as the last recompute left it --
+## a squad placed without this one would reach the map with whatever that was.
 ##
 ## The nine writes are in the engine's own order. `+0x3D` is stored last but
 ## one because the two zeroes after it (`+0x3E` heat, `+0x40` malfunction) and
@@ -144,8 +144,7 @@ static func recompute_full(unit: UnitState, types: UnitTypeTable,
 	unit.armour_front = armour.x
 	unit.armour_rear = armour.y
 	unit.action_state = 0
-	unit.ammo = weapons.magazine_for(unit.weapon,
-		unit.has_equipment(Interact.EQUIP_DOUBLE_MUNITION))
+	unit.ammo = weapons.magazine_of(unit)
 	unit.heat = 0
 	unit.malfunction = 0
 	unit.acted = 0

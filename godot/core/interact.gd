@@ -407,10 +407,7 @@ static func execute(state: MapState, units: Dictionary, utab: UnitTypeTable,
 		state.set_action_point(index, 0)
 		out.kind = "message_only"
 	elif ap == 12:
-		var magazine: int = wtab.magazine(unit.weapon)
-		if unit.has_equipment(EQUIP_DOUBLE_MUNITION):
-			magazine *= 2
-		unit.ammo = magazine
+		unit.ammo = wtab.magazine_of(unit)
 		state.set_action_point(index, 0)
 		out.kind = "full_munition"
 	elif ap == 13 or ap == 17 or ap == 18:

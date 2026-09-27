@@ -169,8 +169,10 @@ static func _turns(angle: int) -> float:
 ## table equally well, and a half turn for a backwards-authored model leaves
 ## nothing for a mirror to explain.
 ##
-## **Where the engine does this is still UNVERIFIED**, exactly as `docs/40`
-## section 5.3's scale is: the Charisma-to-Eng3d bridge is not decompiled.
+## **Where the engine does it**: `0x0042C900` builds the placement through
+## `_E3D_init_matrix_RzRxRy` with `az + 0x800` (`0x0042C943`), a half turn
+## about the model's own up axis -- a rotation, determinant +1 on all eight
+## facings, not a mirror (docs/40 section 5.4).
 static func charisma_yaw_basis(yaw: int) -> Basis:
 	return yaw_basis(yaw + ANGLE_FULL_TURN / 2)
 

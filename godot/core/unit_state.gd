@@ -383,6 +383,8 @@ func hash_into(ctx: HashingContext) -> void:
 
 ## docs/10 section 5 -- the unit array is 200 fixed records.
 const UNIT_SLOTS: int = 200
+## [method free_slot]'s refusal.
+const NO_FREE_SLOT: int = -1
 ## `+0x4D` at or above this is a **hero**, and `aRemoveUnitElement` counts one
 ## when it takes such a unit off the map. docs/22 section 9.5.
 const HERO_POOL_FLAG: int = 2
@@ -394,21 +396,24 @@ const HERO_POOL_FLAG: int = 2
 const HERO_COUNT_WRAP: int = 256
 
 
-## The lowest slot holding no **live** unit.
+## `aInsertUnit` `0x00477830` with slot -1 -- the lowest slot whose hit points
+## are 0, a named record included, or [constant NO_FREE_SLOT].
 ##
-## **UNVERIFIED.** docs/20 section 7.4 records everything `0x00479CF0` writes
-## and not which index it writes it to; the array is 200 fixed records, so the
-## lowest free one is the natural reading and it is what both implementations
-## use.  It lives here, and not in [LclContext], because the interpreter is no
-## longer the only caller: [method Combat.hatch] generates a unit too.
+## Measured on `_C_141` (`tools/turn_gold.py` phase `spawn`, 5/5; docs/94
+## section 4): the engine **refuses** when that slot is the last one
+## (`cmp ebx, 0xC7` -- so at most 199 units ever stand), and with none free
+## it writes one record past the array. The remake refuses both. It lives
+## here, and not in [LclContext], because the interpreter is not the only
+## caller: [method Combat.hatch] and the deployment insert too.
 static func free_slot(units: Dictionary) -> int:
 	for slot_id: int in range(UNIT_SLOTS):
-		if not units.has(slot_id):
-			return slot_id
-		var unit: UnitState = units[slot_id]
-		if not unit.is_alive():
-			return slot_id
-	return UNIT_SLOTS - 1
+		var free: bool = not units.has(slot_id)
+		if not free:
+			var unit: UnitState = units[slot_id]
+			free = not unit.is_alive()
+		if free:
+			return NO_FREE_SLOT if slot_id == UNIT_SLOTS - 1 else slot_id
+	return NO_FREE_SLOT
 
 
 ## An in-bounds cell with no live unit on it.
@@ -462,8 +467,11 @@ static func generate(state: MapState, units: Dictionary,
 	var target: Vector2i = _spawn_cell(state, units, ctrlmap, x, y, exact)
 	if target.x < 0:
 		return null
+	var slot_id: int = free_slot(units)
+	if slot_id == NO_FREE_SLOT:
+		return null
 	var unit: UnitState = UnitState.new()
-	unit.slot = free_slot(units)
+	unit.slot = slot_id
 	unit.player = spawn_player
 	unit.type_id = type_id
 	unit.x = target.x

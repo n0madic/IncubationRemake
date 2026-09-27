@@ -136,13 +136,6 @@ func kill(unit: UnitState) -> void:
 	UnitState.remove(state, types, turn, unit)
 
 
-## The lowest slot holding no **live** unit -- [method UnitState.free_slot],
-## which is where the rule lives now that the interpreter is no longer its only
-## caller.  See [method spawn] for why the rule matters more than the answer.
-func free_slot() -> int:
-	return UnitState.free_slot(units)
-
-
 ## Every cell whose action point is in the inclusive range.
 func cells_with_actpt(low: int, high: int) -> PackedInt32Array:
 	var out: PackedInt32Array = PackedInt32Array()

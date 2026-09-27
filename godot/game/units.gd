@@ -58,8 +58,10 @@ var states: Dictionary[int, CharismaState] = {}
 ## Slot -> an in-progress walk, `{"cells": PackedInt32Array, "width": int,
 ## "elapsed": float, "seconds": float}`. Empty between walks.
 var _walks: Dictionary[int, Dictionary] = {}
-## Slot -> the aim a shot on screen is holding, `{"facing": int,
-## "twist": int}`. Present only while the body is playing its combat clip,
+## Slot -> the aim a shot on screen is holding, `{"facing": int, "mode":
+## String, "from": Vector3i, "target": Vector3i, "held": Dictionary}`
+## ([method AttackAim.plan]; `held` is [method CharismaBody.aim_spine]'s).
+## Present only while the body is playing its combat clip,
 ## and the reason the picture survives a rebuild in the middle of one: see
 ## [method fire].
 var _aim: Dictionary[int, Dictionary] = {}
@@ -230,8 +232,7 @@ func _build_one(view: Dictionary, types: UnitTypeTable,
 			var _resumed: bool = states[slot].resume(carried[slot])
 		node.add_child(body)
 		face(node, body, facing)
-		if _aim.has(slot):
-			body.aim_twist = DictRead.as_int(_aim[slot]["twist"])
+		_apply_aim(slot, node, body)
 		return node
 
 	# No body. The type's own model column is drawn where it names a real
@@ -301,14 +302,11 @@ func animate(delta: float, world: World, frozen: bool = false) -> void:
 			# the mission.
 			if state.mode == CharismaState.Mode.FIRE and not state.is_busy():
 				state.rest()
-				# The twist goes with the clip. The field lives on the body
-				# and [method CharismaBody.apply] reads it every pose, so
-				# dropping the record alone would leave the unit idling with
-				# a turned waist until some later rebuild happened to clear
-				# it -- which is a rebuild that usually comes, and never on a
-				# promise.
-				_aim.erase(slot)
-				_apply_aim(slot)
+				# The aim goes with the clip: the closing
+				# `aChangeUnitViewDirection` puts the octant rotation back
+				# (`0x004051E0` -> `0x0042C900`), so the body faces the
+				# world's octant again now rather than at some later rebuild.
+				_end_aim(slot)
 	for slot: int in _walks.keys():
 		_advance_walk(slot, delta, world)
 
@@ -340,10 +338,24 @@ func fire(slot: int, tx: int, ty: int, weapon: int = -1) -> float:
 			# From where the body **is drawn**. The mirror is what the picture
 			# reads, so during a replay this is the cell the unit stands on
 			# now and not the one it ends the turn on.
-			var facing: int = Combat.direction(DictRead.as_int(view["x"]),
-				DictRead.as_int(view["y"]), tx, ty)
-			var twist: int = aim_twist(DictRead.as_int(view["x"]),
-				DictRead.as_int(view["y"]), tx, ty, facing)
+			var x: int = DictRead.as_int(view["x"])
+			var y: int = DictRead.as_int(view["y"])
+			var facing: int = Combat.direction(x, y, tx, ty)
+			# docs/22 section 7.1 step 5: the body is aimed along the exact
+			# line from its object to the target cell's marker.
+			var from: Vector3i = Vector3i(x * WorldSpace.WORLD_UNITS_PER_FIELD,
+				y * WorldSpace.WORLD_UNITS_PER_FIELD, DictRead.as_int(
+					shown_ref.cell_view(x, y).get("height", 0)))
+			var to: Vector3i = Vector3i(tx * WorldSpace.WORLD_UNITS_PER_FIELD,
+				ty * WorldSpace.WORLD_UNITS_PER_FIELD, DictRead.as_int(
+					shown_ref.cell_view(tx, ty).get("height", 0)))
+			var type_id: int = DictRead.as_int(view["type_id"])
+			# The shot's own weapon when the caller names it: the mirror may
+			# not carry a toggle yet, and the switch reads `unit[+0x3F]`.
+			var shot_weapon: int = weapon if weapon >= 0 \
+				else DictRead.as_int(view["weapon"])
+			var plan: Dictionary = AttackAim.plan(type_id, shot_weapon, from, to,
+				HitChance.full_height(shown_ref.unit_types(), type_id))
 			# **Held against the rebuild, not only applied.** A shot whose
 			# target dies rebuilds the bodies from the mirror in the middle of
 			# the clip ([method SliceMain._land_current_delta]), and a
@@ -352,9 +364,17 @@ func fire(slot: int, tx: int, ty: int, weapon: int = -1) -> float:
 			# (`core/reaction.gd`). Without this the overwatcher snapped round
 			# to where it had been looking while its own shot was still
 			# playing.
-			_aim[slot] = {"facing": facing, "twist": twist}
-			face(node, _body_of(slot), facing)
-			_apply_aim(slot)
+			var body: CharismaBody = _body_of(slot)
+			face(node, body, facing)
+			var aim_at: Vector3i = plan["target"]
+			var held: Dictionary[String, PackedFloat64Array] = {}
+			if body != null and plan["mode"] == AttackAim.MODE_PART:
+				body.release_aim()
+				held = body.aim_spine(AttackAim.placement_for(
+					FACING_ANGLES[facing % FACING_ANGLES.size()], from), aim_at)
+			_aim[slot] = {"facing": facing, "mode": plan["mode"],
+				"from": from, "target": aim_at, "held": held}
+			_apply_aim(slot, node, body)
 	return states[slot].fire()
 
 
@@ -479,12 +499,9 @@ func resume_past_break(slot: int) -> int:
 
 ## `aStopCHAnimation` on one body: back to its idle.
 func rest(slot: int) -> void:
-	_aim.erase(slot)
+	_end_aim(slot)
 	if states.has(slot):
 		states[slot].rest()
-		var body: CharismaBody = _body_of(slot)
-		if body != null:
-			body.aim_twist = 0
 
 
 func is_playing(slot: int) -> bool:
@@ -1092,46 +1109,13 @@ func _floor_y(slot: int) -> float:
 		/ WorldSpace.WORLD_UNITS_PER_METRE
 
 
-## How far the aim misses the octant the body stands in, in engine angle units.
-##
-## The engine turns a shooter with `aChangeUnitViewDirection` into one of
-## **eight** headings (`fcn.0046A6E0`, [constant FACING_ANGLES]) chosen by
-## `direction()`'s `|dy/dx|` thresholds of 0.5 and 1.5 -- so the sectors come
-## in three sizes (67.38 degrees along y, 53.13 along x, 29.75 on the
-## diagonals: `Combat.direction`) and the body can stand up to **33.69
-## degrees** off the line its shot travels (docs/22 section 7.1). The shot
-## itself is laid along the exact line to the target, which is what makes the
-## difference visible.
-##
-## This is the remainder, and [method CharismaBody.aim] is what does something
-## with it: the octant is the original's and stays the unit's facing
-## everywhere -- the rules, the save, the rear-shot arc, the ground marker --
-## while the picture turns the shooter's **waist** by the remainder so the
-## barrel points where the round goes. It is a deliberate divergence from the
-## original, which turns nothing (docs/92 section 7.20).
-##
-## The engine's yaw runs clockwise from engine +Y: 0 at `dy > 0`, a quarter
-## turn at `dx > 0`, which is [constant FACING_ANGLES] read against
-## `Combat.direction`'s own octants. The answer is wrapped into
-## `(-half turn, +half turn]` so a twist is always the short way round.
-static func aim_twist(x: int, y: int, tx: int, ty: int, facing: int) -> int:
-	var dx: int = tx - x
-	var dy: int = ty - y
-	if dx == 0 and dy == 0:
-		return 0
-	var exact: int = roundi(atan2(float(dx), float(dy))
-		/ TAU * float(WorldSpace.ANGLE_FULL_TURN))
-	var octant: int = FACING_ANGLES[facing % FACING_ANGLES.size()]
-	var half: int = WorldSpace.ANGLE_FULL_TURN / 2
-	return posmod(exact - octant + half, WorldSpace.ANGLE_FULL_TURN) - half
-
-
-## The twist a shot on screen is holding for `slot`, or zero when it holds
-## none. For a caller measuring what the picture is doing.
-func aim_twist_of(slot: int) -> int:
+## The mode a shot on screen is holding for `slot` ([constant
+## AttackAim.MODE_NONE] when it holds none). For a caller measuring what the
+## picture is doing.
+func aim_mode_of(slot: int) -> String:
 	if not _aim.has(slot):
-		return 0
-	return DictRead.as_int(_aim[slot]["twist"])
+		return AttackAim.MODE_NONE
+	return DictRead.as_string(_aim[slot]["mode"])
 
 
 ## How many slots are holding an aim, for a suite to check the bookkeeping.
@@ -1139,12 +1123,42 @@ func aim_count() -> int:
 	return _aim.size()
 
 
-## Put the held aim on the body, if there is one and it has a body.
-func _apply_aim(slot: int) -> void:
+## Put the held aim on the body: `0x0042CAC0`'s look-at turns the whole model
+## ([method AttackAim.look_basis]) while the node -- the ground marker's
+## frame -- stays on the octant, as `unit[+0x46]` does.
+##
+## [constant AttackAim.MODE_PART] keeps the octant and holds the spine
+## rotation [method CharismaBody.aim_spine] computed when the shot began --
+## re-held here after a rebuild, never recomputed from the rebuilt pose.
+func _apply_aim(slot: int, node: Node3D, body: CharismaBody) -> void:
+	if body == null or node == null or not _aim.has(slot):
+		return
+	var aim: Dictionary = _aim[slot]
+	if DictRead.as_string(aim["mode"]) == AttackAim.MODE_PART:
+		var held: Dictionary[String, PackedFloat64Array] = aim["held"]
+		body.hold_rotations(held)
+		return
+	if DictRead.as_string(aim["mode"]) != AttackAim.MODE_LOOK:
+		return
+	var from: Vector3i = aim["from"]
+	var target: Vector3i = aim["target"]
+	var look: Basis = AttackAim.look_basis(from, target, node.basis)
+	body.basis = node.basis.inverse() * look * WorldSpace.charisma_offset()
+
+
+## The shot's end: the spine aim released (`0x004960F5`) and the body back on
+## the octant the shot turned it to (`aChangeUnitViewDirection`), the look-at
+## gone. That octant, not the mirror's: the mirror may not carry the attack's
+## delta yet, and a reaction's never does -- the next rebuild draws whatever
+## facing the world then holds.
+func _end_aim(slot: int) -> void:
 	var body: CharismaBody = _body_of(slot)
-	if body == null:
-		return
+	if body != null:
+		body.release_aim()
 	if not _aim.has(slot):
-		body.aim_twist = 0
 		return
-	body.aim_twist = DictRead.as_int(_aim[slot]["twist"])
+	var facing: int = DictRead.as_int(_aim[slot]["facing"])
+	_aim.erase(slot)
+	var node: Node3D = _node_of(slot)
+	if node != null:
+		face(node, body, facing)

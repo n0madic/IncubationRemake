@@ -92,6 +92,14 @@ EQUIP_COOLER = 19
 #: The absorber pickup hands out four charges.
 ABSORBER_CHARGES = 4
 
+
+def magazine_for(mun: int, double_munition: bool) -> int:
+    """``0x004752A0`` stored into the ``+0x3D`` byte: the weapon's ``mun``,
+    doubled by the Ammo Pack -- a doubled 255 lands as 254.  The one place
+    the models write the rule (``godot/core/weapon_table.gd`` ``fill``)."""
+    return (mun * 2) & 0xFF if double_munition else mun
+
+
 #: ``docs/20`` §5.3 -- the mission's equipment-point bonus.
 GAME_CONTROL_EQUIPMENT_POINTS = 10
 
@@ -506,10 +514,8 @@ def execute_use(world: CombatWorld, unit: CombatUnit) -> UseResult:
         # one place in this module that fails with something other than
         # :class:`InteractError`, and `godot/core/interact.gd` falls back to 0.
         weapon = world.tables.weapons.get(unit.weapon)
-        magazine = 0 if weapon is None else weapon.mun
-        if unit.has(EQUIP_DOUBLE_MUNITION):
-            magazine *= 2
-        unit.ammo = magazine
+        unit.ammo = magazine_for(0 if weapon is None else weapon.mun,
+                                 unit.has(EQUIP_DOUBLE_MUNITION))
         _consume(world, index)
         result.kind = "full_munition"
     elif ap in (13, 17, 18):

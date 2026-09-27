@@ -594,6 +594,52 @@ func _synthetic(h: TestHarness) -> void:
 	h.equal("synthetic.platform_leaves_a_deep_hole",
 		ridden.field_type_at(ridden.index_of(1, 1)), Platform.CTRL_TYPE_DEEP_HOLE)
 
+	# docs/20 section 7.4 steps 2 and 4, measured on `_C_105`: the record the
+	# search finds beside the centre marker is carried `dist * 3200` in the
+	# table (a far one is not); the cells' object, obstacle and countdown go
+	# with the type and the source is cleared to 0 / 0xFF / 0; the height
+	# stays on both cells.
+	var cells_w: int = 8
+	var raised: Array = []
+	var slot1: Array = []
+	var slot2: Array = []
+	var slot0: Array = []
+	for i: int in range(cells_w * cells_w):
+		var in_block: bool = i % cells_w <= 2 and i / cells_w <= 2
+		raised.append(1600 if in_block else 0)
+		slot1.append(3 if i == cells_w + 1 else 255)
+		slot2.append(MapState.OBSTACLE_FIRE if i == cells_w + 1 else 255)
+		slot0.append(4 if i == cells_w + 1 else 0)
+	var carried: Dictionary = _run_synthetic(_program([
+		_instr("command", "Platform", [_num(1), _num(1), _num(3), _num(3)]),
+		_mark(),
+		_instr("close", "", []),
+	]), [], cells_w, cells_w,
+		{"height": raised, "effect1": slot1, "effect2": slot2,
+			"effect0": slot0}, -1,
+		[{"prototype": "L024EB00", "x": 3200, "y": 3200, "z": 1600},
+			{"prototype": "L024EB00", "x": 6 * 3200, "y": 6 * 3200, "z": 0}])
+	var carried_state: MapState = carried["state"]
+	var table: Array[Dictionary] = carried_state.land_objects()
+	h.equal("synthetic.platform_moves_the_found_record",
+		[DictRead.as_int(table[0]["x"]), DictRead.as_int(table[0]["y"]),
+			DictRead.as_int(table[0]["z"]), DictRead.as_int(table[1]["x"])],
+		[4 * 3200, 3200, 1600, 6 * 3200], "`0x00412D00`: +0x10/+0x14 only")
+	var src: int = carried_state.index_of(1, 1)
+	var dst: int = carried_state.index_of(4, 1)
+	h.equal("synthetic.platform_carries_the_cell_objects",
+		[carried_state.effect_at(MapState.OBJECT_SLOT, dst),
+			carried_state.obstacle_at(dst),
+			carried_state.effect_at(MapState.TIMER_SLOT, dst),
+			carried_state.effect_at(MapState.OBJECT_SLOT, src),
+			carried_state.obstacle_at(src),
+			carried_state.effect_at(MapState.TIMER_SLOT, src)],
+		[3, MapState.OBSTACLE_FIRE, 4, 0, MapState.OBSTACLE_NONE, 0],
+		"`0x00413049`..`0x00413070`")
+	h.equal("synthetic.platform_leaves_the_heights",
+		[carried_state.height_at(src), carried_state.height_at(dst)],
+		[1600, 0], "`+0x01` is not in the copy loop")
+
 	# A destination cell already occupied: the relocation is refused and the
 	# rider's source cell keeps its link -- a cleared one would leave a unit
 	# the map no longer knows about.
@@ -799,6 +845,7 @@ func _synthetic(h: TestHarness) -> void:
 	_spores(h)
 	_barrier(h)
 	_foot_bridges(h)
+	_free_slots(h)
 	_crush_wall(h)
 	_open_door(h)
 
@@ -1470,6 +1517,36 @@ func _foot_bridges(h: TestHarness) -> void:
 		[fell_state.unit_at(fell_state.index_of(4, 4)),
 			fell_state.unit_at(fell_state.index_of(5, 5))],
 		[MapState.NO_UNIT, MapState.NO_UNIT])
+	# A fire on the block is freed before the cell becomes a hole
+	# (`0x00414B96`..`0x00414BBF`): the object slot goes back to the pool and
+	# the three bytes are cleared.
+	var burning: Array = []
+	var fire_obj: Array = []
+	var countdown: Array = []
+	for i: int in range(wide * wide):
+		var on_fire: bool = i == 3 * wide + 3
+		burning.append(MapState.OBSTACLE_FIRE if on_fire else 255)
+		fire_obj.append(7 if on_fire else 255)
+		countdown.append(2 if on_fire else 0)
+	var doused: Dictionary = _run_synthetic(_program([
+		_instr("command", "FootBridge", [_num(4), _num(4), _num(30), _num(1)]),
+		_mark(),
+		_instr("close", "", []),
+	]), [
+		{"slot": 0, "player": 0, "x": 4, "y": 4},
+		{"slot": 1, "player": 0, "x": 5, "y": 5},
+	], wide, wide, {"field_type": zeros, "effect2": burning,
+		"effect1": fire_obj, "effect0": countdown})
+	var doused_state: MapState = doused["state"]
+	var fire_cell: int = doused_state.index_of(3, 3)
+	h.equal("foot_bridge.frees_a_fire_on_the_block",
+		[doused_state.object_state(7), doused_state.obstacle_at(fire_cell),
+			doused_state.effect_at(MapState.OBJECT_SLOT, fire_cell),
+			doused_state.effect_at(MapState.TIMER_SLOT, fire_cell),
+			doused_state.field_type_at(fire_cell)],
+		[MapState.NO_OBJECT, MapState.OBSTACLE_NONE, 0, 0,
+			LclInterpreter.CTRL_TYPE_DEEP_HOLE],
+		"`aDeleteSpecialObject`, then +0x0F = 0, +0x10 = 0xFF, +0x0E = 0")
 	h.equal("foot_bridge.the_event_carries_the_riders",
 		_events_named(fell, "foot_bridge"), [[4, 4, 30, 2, 0, 1]],
 		"x, y, frames, standing, then the slots in block order")
@@ -1802,3 +1879,36 @@ class RecordingCameraHost extends ShotHost:
 		eye = to_eye
 		target = to_target
 		return 0
+
+
+## `aInsertUnit` `0x00477830` with slot -1, as `turn_gold.py`'s `spawn` phase
+## measured it on `_C_141` (docs/94 section 4): the lowest slot with zero hit
+## points, a named record included; a refusal when that is slot 199; and a
+## refusal (where the engine overruns) when every slot is taken.
+func _free_slots(h: TestHarness) -> void:
+	var cases: Array = [
+		["empty", [], 0],
+		["named_dead_record_is_free", [[0, 0], [1, 10]], 0],
+		["lowest_gap", [[0, 10], [1, 10], [3, 10]], 2],
+		["slot_198_is_taken", _live_below(198), 198],
+		["slot_199_is_refused", _live_below(199), UnitState.NO_FREE_SLOT],
+		["full_is_refused", _live_below(UnitState.UNIT_SLOTS),
+			UnitState.NO_FREE_SLOT],
+	]
+	for entry: Variant in cases:
+		var case: Array = entry
+		var units: Dictionary = {}
+		for pair: Variant in case[1]:
+			var slot_hp: Array = pair
+			var unit: UnitState = UnitState.new()
+			unit.slot = slot_hp[0]
+			unit.hp = slot_hp[1]
+			units[unit.slot] = unit
+		h.equal("free_slot.%s" % case[0], UnitState.free_slot(units), case[2])
+
+
+static func _live_below(count: int) -> Array:
+	var out: Array = []
+	for slot: int in range(count):
+		out.append([slot, 10])
+	return out

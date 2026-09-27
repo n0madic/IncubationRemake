@@ -164,9 +164,10 @@ var next_map: String = ""
 ## address, so a save taken after the first hand-over comes back with the
 ## one-shot already spent -- which matters, because otherwise the reset inside
 ## it would clear the loaded hero counters. This remake's save block is its
-## own and does not carry the byte; [method load_save] derives it instead,
-## from the one thing that says the same: a loaded turn counter above zero can
-## only have come from a hand-over that has already run.
+## own and does not carry the byte; [method load_save] sets it instead,
+## because every save the engine can write is taken after the view player's
+## init has run the first hand-over: the byte is 1 in 9/9 retail saves,
+## turn-0 ones included (docs/43 section 5.5).
 var _hand_over_initialised: bool = false
 
 ## The picture's record of what each command changed, or `null`.
@@ -831,7 +832,7 @@ func _run_mission_script(call_type: int,
 	context.speech = speech
 	var specials: Array[Dictionary] = resource.special_objects()
 	for id: int in range(specials.size()):
-		context.footprints[id] = DictRead.as_int32_array(specials[id]["cells"])
+		context.footprints[id] = _footprint_now(id, specials[id])
 	var outcome: LclOutcome = LclInterpreter.run(script_program, context,
 		MissionScript.to_slots(environment))
 	next_map = context.next_map
@@ -1796,8 +1797,8 @@ func load_save(data: PackedByteArray) -> int:
 	_camera = DictRead.as_dict(decoded["camera"])
 	_scenery = DictRead.as_dict(decoded["scenery"])
 	# See [member _hand_over_initialised]: the engine restores the latch from
-	# the save, and a non-zero turn counter is what a spent one implies.
-	_hand_over_initialised = turn.turn != 0
+	# the save, and every save it writes carries it spent -- a turn-0 one too.
+	_hand_over_initialised = true
 	# `aLoad.cpp:1649` (`0x004490A9`) -- the load ends with a permanent
 	# `aBuildVisibleMap(aGetCurrentPlayer())`, after the mission objectives are
 	# read back. The stored `+0x4F` bytes are therefore not what the loaded
@@ -1894,13 +1895,8 @@ func deploy_from_pool(player: int, record: UnitState, x: int,
 	if not UnitState.free_cell(state, _units, x, y):
 		return {"result": DEPLOY_CELL_TAKEN, "slot": MapState.NO_UNIT}
 	var slot: int = UnitState.free_slot(_units)
-	# `free_slot` answers with the **last** slot when the array is full rather
-	# than with a refusal, so a full array has to be recognised here or a
-	# deployment would silently overwrite slot 199.
-	if _units.has(slot) and DictRead.as_int(slot) >= 0:
-		var sitting: UnitState = _units[slot]
-		if sitting.is_alive():
-			return {"result": DEPLOY_NO_SLOT, "slot": MapState.NO_UNIT}
+	if slot == UnitState.NO_FREE_SLOT:
+		return {"result": DEPLOY_NO_SLOT, "slot": MapState.NO_UNIT}
 
 	var unit: UnitState = UnitState.from_view(record.view())
 	unit.slot = slot
@@ -1940,9 +1936,13 @@ func deploy_from_pool(player: int, record: UnitState, x: int,
 ## agent, which can name any cell.
 ##
 ## No recompute: only `aTransferAllUnitsFromMapToPool` runs one (`0x00478EA1`),
-## and a record on turn 0 was recomputed on the way in. **UNVERIFIED** whether
-## `aKillUnit` rebuilds visibility; the rebuild here mirrors the placement's,
-## so the map a squad sees is the map it stands on.
+## and a record on turn 0 was recomputed on the way in.
+##
+## **No fog rebuild either.** `aKillUnit`'s whole call closure reaches no
+## visibility builder, and in the running original taking a soldier back moves
+## no `+0x4F` byte -- an alien only that soldier saw stays visible until the
+## next placement (`0x00478DE4`) or the hand-over rebuilds (docs/43 section
+## 5.5, `hud_probe.py` phase `recall`).
 func recall_from_map(player: int, x: int, y: int) -> Dictionary:
 	if not state.in_bounds(x, y):
 		return {"result": RECALL_NO_UNIT, "record": null}
@@ -1957,8 +1957,6 @@ func recall_from_map(player: int, x: int, y: int) -> Dictionary:
 	var record: UnitState = UnitState.from_view(unit.view())
 	UnitState.vacate(state, _unit_types, unit, unit.x, unit.y)
 	_units.erase(slot)
-	Visibility.build(state, _units, _unit_types, player, turn.human_count(),
-		turn.mode)
 	return {"result": RECALL_OK, "record": record}
 
 
@@ -1997,3 +1995,28 @@ func clear_units_of(player: int) -> int:
 		_units.erase(slot)
 		removed += 1
 	return removed
+
+
+## A `.lev` object's footprint where its record stands **now**: the
+## converter projected it at the authored position, and a `Platform` ride
+## carries the record whole fields along (`0x00412D00`, docs/20 section 7.4),
+## so the cells shift by the same whole fields. A record the table no longer
+## holds keeps the authored cells; cells carried off the map are dropped.
+func _footprint_now(id: int, authored: Dictionary) -> PackedInt32Array:
+	var cells: PackedInt32Array = DictRead.as_int32_array(authored["cells"])
+	var record: Dictionary = state.land_object(id)
+	if record.is_empty():
+		return cells
+	var dx: int = DictRead.as_int(record["x"]) - DictRead.as_int(authored["x"])
+	var dy: int = DictRead.as_int(record["y"]) - DictRead.as_int(authored["y"])
+	if dx == 0 and dy == 0:
+		return cells
+	var fx: int = dx / MapResource.WORLD_UNITS_PER_FIELD
+	var fy: int = dy / MapResource.WORLD_UNITS_PER_FIELD
+	var out: PackedInt32Array = PackedInt32Array()
+	for cell: int in cells:
+		var x: int = cell % state.width + fx
+		var y: int = cell / state.width + fy
+		if state.in_bounds(x, y):
+			out.append(state.index_of(x, y))
+	return out

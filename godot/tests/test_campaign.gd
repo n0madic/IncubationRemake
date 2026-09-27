@@ -192,6 +192,43 @@ func _presets(h: TestHarness) -> void:
 		and state.roster.record(slot).resale == kit
 		and kit != Roster.resale_of(DictRead.as_int(costs.get(1, 0))),
 		"0x004776E0 counts the carried items, not the weapon alone")
+	# `aBuyWeapon` ends with the full recompute `0x004759E0`, which refills
+	# `+0x3D` to the new weapon's magazine (docs/43 section 5.5).
+	h.equal("preset.weapon_purchase_refills_the_magazine",
+		state.roster.record(slot).ammo, WeaponTable.fill(DictRead.as_int(
+			host.row_for(CampaignHost.KIND_WEAPONS, 1)["mun"]),
+			state.roster.record(slot).has_equipment(
+				Interact.EQUIP_DOUBLE_MUNITION)))
+	# `0x004752A0` into the `+0x3D` byte: the one doubling rule every refill
+	# goes through.
+	var fills: Array = [[7, false, 7], [7, true, 14], [127, true, 254],
+		[128, true, 0], [255, true, 254]]
+	for entry: Variant in fills:
+		var f: Array = entry
+		var mun: int = f[0]
+		var doubled: bool = f[1]
+		h.equal("magazine.fill_%d_%s" % [mun, doubled],
+			WeaponTable.fill(mun, doubled), f[2])
+	var packed: UnitState = UnitState.new()
+	packed.equipment = PackedInt32Array([Interact.EQUIP_DOUBLE_MUNITION])
+	h.equal("magazine.fill_for_reads_the_ammo_pack",
+		[WeaponTable.fill_for(packed, 10), WeaponTable.fill_for(UnitState.new(),
+			10)], [20, 10])
+	# And the purchase that brings the pack refills doubled (`aBuyEquipment`
+	# ends with `0x004759E0`).
+	var pack_row: Dictionary = host.row_for(CampaignHost.KIND_EQUIPMENT,
+		Interact.EQUIP_DOUBLE_MUNITION)
+	var weapon_row: Dictionary = host.row_for(CampaignHost.KIND_WEAPONS,
+		state.roster.record(slot).weapon)
+	state.set_points(0, CampaignState.EQUIPMENT_POINT_CAP)
+	var bought_pack: Dictionary = state.buy_equipment(0, slot,
+		Interact.EQUIP_DOUBLE_MUNITION, pack_row, weapon_row)
+	h.check("preset.ammo_pack_doubles_the_refill",
+		DictRead.as_string(bought_pack["result"]) == Upgrade.OK
+			and state.roster.record(slot).ammo == WeaponTable.fill(
+				DictRead.as_int(weapon_row["mun"]), true),
+		"%s, %d rounds" % [bought_pack["result"],
+			state.roster.record(slot).ammo])
 	h.equal("preset.dismissal_after_swap_refunds_the_kit",
 		state.dismiss(0, slot, costs), kit * Roster.RESALE_SCALE)
 	# The Jet Pack's granted scan is not charged for: `+0x28` set takes item
@@ -899,8 +936,22 @@ func _deployment(h: TestHarness, cases: Dictionary) -> void:
 				world.unit_view(DictRead.as_int(faced["slot"]))["facing"]), 5)
 			# `aTransferUnitFromMapToPool` `0x00478F20`, minus the pool
 			# insertion: the record comes back and the cell is free again.
+			# Every enemy marked seen first, so a fog pass here -- which
+			# would clear the ones nobody sees -- cannot go unnoticed.
+			var live_units: Dictionary = world.units_for_ai()
+			for other: int in live_units:
+				var other_unit: UnitState = live_units[other]
+				if other_unit.player != 0:
+					other_unit.visibility = 1
+			var fog_before: Dictionary = _visibility_of(world)
+			fog_before.erase(DictRead.as_int(faced["slot"]))
 			var taken: Dictionary = world.recall_from_map(0, want[1].x,
 				want[1].y)
+			# `aKillUnit`'s closure reaches no visibility builder, and the
+			# running original moves no `+0x4F` on a take-back (docs/43
+			# section 5.5, `hud_probe.py` phase `recall`).
+			h.equal("deploy.%s.recall_leaves_the_fog" % name,
+				_visibility_of(world), fog_before)
 			h.equal("deploy.%s.recalled" % name,
 				DictRead.as_string(taken["result"]), World.RECALL_OK)
 			var back_record: UnitState = taken["record"]
@@ -1131,6 +1182,7 @@ const CTRL_DEEP_HOLE: int = 4
 
 
 func _mission_opening(h: TestHarness) -> void:
+	_carried_footprint(h)
 	var balance: Dictionary = CacheFixture.balance()
 	var document: Dictionary = CacheFixture.mission(OPENING_MISSION)
 	if document.is_empty() or balance.is_empty():
@@ -1181,6 +1233,16 @@ func _mission_opening(h: TestHarness) -> void:
 			silent.state.index_of(PLATFORM_FROM.x, PLATFORM_FROM.y)),
 		CTRL_FREE_PLACE,
 		"no NEXT TURN, so the platform is where the .lev left it")
+	# **A load restores the re-entry latch spent, turn 0 included**: it is 1
+	# in 9/9 retail saves, and a load reaches `aInitBattleGround` with no
+	# hand-over of its own (docs/43 section 5.5).
+	var turn_zero: World = World.create(document, balance, 0.0)
+	var loaded: World = World.create(document, balance, 0.0)
+	h.equal("opening.turn_zero_save_loads",
+		SaveCodec.result_name(loaded.load_save(turn_zero.save({}))), "OK")
+	h.check("opening.load_restores_the_spent_latch",
+		loaded.turn.turn == 0 and loaded._hand_over_initialised,
+		"a turn-0 load takes handOver(0) at its first Next player")
 
 	# The other arm: a squad deployed, then the hand-over that leaving the
 	# deployment screen makes.
@@ -1386,3 +1448,44 @@ func _endings(h: TestHarness) -> void:
 		CampaignHost.OPENING_STATIC_EXTRO)
 	h.check("endings.no_next_map_past_an_ending",
 		host.tables.next_map("_C_YYY") == "" and host.tables.next_map("_C_180") == "")
+
+
+## Every unit's `+0x4F` by slot -- what a fog pass writes.
+func _visibility_of(world: World) -> Dictionary:
+	var out: Dictionary = {}
+	for slot: int in world.unit_slots():
+		out[slot] = DictRead.as_int(world.unit_view(slot)["visibility"])
+	return out
+
+
+## A `Platform` ride carries its record whole fields (`0x00412D00`), and the
+## footprint a script sweep reads moves with it: `_C_105`'s first record with
+## an authored footprint, carried three fields east.
+func _carried_footprint(h: TestHarness) -> void:
+	var loaded: Dictionary = CacheFixture.load_mission("_C_105")
+	if loaded.is_empty():
+		h.check("footprint.mission", false, "no _C_105 in the cache")
+		return
+	var world: World = loaded["world"]
+	var specials: Array[Dictionary] = world.resource.special_objects()
+	var id: int = -1
+	for candidate: int in range(specials.size()):
+		if not DictRead.as_int32_array(specials[candidate]["cells"]).is_empty():
+			id = candidate
+			break
+	if id < 0:
+		h.check("footprint.an_authored_one", false, "no footprint on _C_105")
+		return
+	var authored: PackedInt32Array = DictRead.as_int32_array(
+		specials[id]["cells"])
+	h.equal("footprint.unmoved_is_authored",
+		world._footprint_now(id, specials[id]), authored)
+	var _moved: bool = world.state.move_land_object(id,
+		3 * MapResource.WORLD_UNITS_PER_FIELD, 0)
+	var want: PackedInt32Array = PackedInt32Array()
+	for cell: int in authored:
+		var x: int = cell % world.state.width + 3
+		if x < world.state.width:
+			want.append(world.state.index_of(x, cell / world.state.width))
+	h.equal("footprint.carried_three_fields_east",
+		world._footprint_now(id, specials[id]), want)

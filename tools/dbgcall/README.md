@@ -645,7 +645,7 @@ directory inside this repository), and each `--check` fails without a capture.
 | `ai_gold.py` | a whole computer turn on `_C_140` | **must not use `--code`** (see below) |
 | `blob_gold.py` | the effect pool's creators and all 74 update arms | one creator per plan; `--probe-startup N` reports reachability |
 | `presentation_gold.py` | the death, idle, unit-animation and set-piece creators; the jump scream's draw and the frame limiter's epoch rule | one process per phase; the last two need no save |
-| `hud_probe.py` | the ground overlay `fcn.00417E70`, blitted into a private surface | the camera must be placed first, or every projection clips out |
+| `hud_probe.py` | the ground overlay `fcn.00417E70` and the unit panel `0x004756D0`, blitted into a private surface; the take-back's fog; `aInitBattleGround` over a loaded turn 0 | the camera must be placed first, or every projection clips out; `aInitBattleGround` needs text module 0 cleared first |
 
 Operational rules for the gold captures; each has cost a re-run:
 
