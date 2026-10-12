@@ -3168,8 +3168,9 @@ own black), its weight that colour's luminance times the share of the tile it
 covers times the blob's half-extent. Each frame the sixteen heaviest go into
 a 16 x 2 `RGBAF` table the scene shader reads through the global uniforms
 `fx_lights` and `fx_light_count` (`project.godot`'s `[shader_globals]`): a
-quadratic fall-off to nothing at five half-extents, at most 8 m, laid on the
-page as a gain, `albedo * (1 + light)`, so black stays black. Only the
+quadratic fall-off to nothing at three half-extents, at most 6 m, its colour
+scaled by the tile's coverage, laid on the page as a gain, `albedo * (1 +
+light)`, so black stays black. Only the
 opaque, colour-keyed and flat kinds take it -- the blended kinds are the
 light. A point light without shadows shines through walls, which is why the
 reach is short. At a count of zero the shader multiplies by exactly one: the
@@ -3178,8 +3179,10 @@ place. The table is global, so whichever instance draws owns it and leaving
 the tree hands back zero; `/state`'s `effect_lights` reports the count.
 
 The halo is the same sources drawn again as additive discs
-(`game/shaders/halo.gdshader`, a 64-texel quadratic fall-off) of 2.5
-half-extents at 0.8 of the flame's colour. **Not the environment's glow**,
+(`game/shaders/halo.gdshader`, a 64-texel quadratic fall-off) of 1.6
+half-extents at 0.45 of the flame's colour times its coverage. *(Tuned down
+after play, 2026-10-12: at five half-extents of reach, 2.5 of halo and no
+coverage scaling, every muzzle flash and impact read as a lamp.)* **Not the environment's glow**,
 which was measured first: in the Compatibility renderer turning glow on --
 even at intensity 0 -- moved a background of 40 to 160 and saturated an
 additive quad that should read 168, and `adjustment_enabled` alone moved 40

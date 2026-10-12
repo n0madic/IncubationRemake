@@ -27,13 +27,16 @@ const GLOBAL_COUNT: StringName = &"fx_light_count"
 ## A light reaches this many half-extents, and never past [constant
 ## MAX_RADIUS]: a point light without shadows shines through walls, so the
 ## reach is kept to a field or two.
-const RADIUS_SCALE: float = 5.0
-const MAX_RADIUS: float = 8.0
-## Colour gain at the source: 1 doubles a white texel under the light's centre.
-const LIGHT_GAIN: float = 2.0
-## A halo's half-size in half-extents, and its colour gain.
-const HALO_SCALE: float = 2.5
-const HALO_GAIN: float = 0.8
+const RADIUS_SCALE: float = 3.0
+const MAX_RADIUS: float = 6.0
+## Colour gain at the source, before the tile's coverage scales it: 1 doubles
+## a texel under the centre of a light whose tile is all flame.
+const LIGHT_GAIN: float = 1.2
+## A halo's half-size in half-extents, and its colour gain before coverage.
+## Tuned down after play (2026-10-12): at 2.5 and 0.8 every muzzle flash and
+## impact read as a lamp.
+const HALO_SCALE: float = 1.6
+const HALO_GAIN: float = 0.45
 ## Sources darker than this are not worth a slot.
 const MIN_LUMINANCE: float = 0.04
 ## A texel brighter than this in any channel is part of a sprite's flame
@@ -187,16 +190,20 @@ func rebuild(blobs: Array[Blob], basis: Basis) -> int:
 			var source: Source = chosen[i]
 			_table.set_pixel(i, 0, Color(source.position.x, source.position.y,
 				source.position.z, source.radius))
-			_table.set_pixel(i, 1, Color(source.colour.r * LIGHT_GAIN,
-				source.colour.g * LIGHT_GAIN, source.colour.b * LIGHT_GAIN, 1.0))
+			var gain: float = LIGHT_GAIN * source.colour.a
+			_table.set_pixel(i, 1, Color(source.colour.r * gain,
+				source.colour.g * gain, source.colour.b * gain, 1.0))
 		_table_texture.update(_table)
 	_publish(chosen.size() if lights_enabled else 0)
 	if halos_enabled and not chosen.is_empty():
 		_immediate.surface_begin(Mesh.PRIMITIVE_TRIANGLES)
 		for source: Source in chosen:
+			# A spark's tile is mostly black: its halo is as faint as the
+			# share of flame it shows.
+			var gain: float = HALO_GAIN * source.colour.a
 			_halo(source.position, minf(source.half * HALO_SCALE, MAX_RADIUS),
-				Color(source.colour.r * HALO_GAIN, source.colour.g * HALO_GAIN,
-				source.colour.b * HALO_GAIN), basis)
+				Color(source.colour.r * gain, source.colour.g * gain,
+				source.colour.b * gain), basis)
 		_immediate.surface_end()
 	return chosen.size()
 
