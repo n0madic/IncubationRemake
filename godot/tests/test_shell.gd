@@ -278,6 +278,7 @@ func _settings_file(h: TestHarness) -> void:
 	written.difficulty = 2
 	written.gore_level = 1
 	written.faithful = false
+	written.smooth_textures = true
 	written.language = "Russian"
 	h.check("settings.written", written.save_to_disk(), SCRATCH_DIR)
 
@@ -286,8 +287,12 @@ func _settings_file(h: TestHarness) -> void:
 	h.check("settings.read_back", read.load_from_disk())
 	h.equal("settings.survive_a_restart",
 		[read.music_volume, read.fx_volume, read.speech_volume, read.difficulty,
-		read.gore_level, read.faithful, read.language],
-		[-1250, -500, -900, 2, 1, false, "Russian"])
+		read.gore_level, read.faithful, read.smooth_textures, read.language],
+		[-1250, -500, -900, 2, 1, false, true, "Russian"])
+	# docs/92 section 7.28: texel by texel is what was seen, so it is what a
+	# fresh install draws, and a file from before the row reads the same.
+	h.check("settings.sharp_textures_by_default",
+		not GameSettings.new().smooth_textures, "the observed picture first")
 	h.equal("settings.language_defaults_to_the_base", GameSettings.new().language,
 		"", "empty means the cache's base language (docs/92 section 7.6)")
 
@@ -335,6 +340,8 @@ func _settings_file(h: TestHarness) -> void:
 	h.check("settings.older_file_loads", migrated.load_from_disk())
 	h.equal("settings.speech_falls_back_to_the_effects_volume",
 		migrated.speech_volume, -2000)
+	h.check("settings.older_file_keeps_sharp_textures",
+		not migrated.smooth_textures, "no schema bump for the row")
 
 	# A file this build cannot read is **not** replaced: losing a player's
 	# settings because one byte went wrong is the quiet damage section 7.4 is
@@ -1496,9 +1503,10 @@ func _screens(h: TestHarness) -> void:
 	options.setup(_art, _strings, _font)
 	h.equal("screens.options_off_the_map", _sorted(_actions_of(options)),
 		PackedStringArray(["back", "option:controls", "option:difficulty", "option:faithful",
-		"option:font", "option:gore"]),
+		"option:font", "option:gore", "option:textures"]),
 		"the four the original has and this remake connects, plus the gore "
-		+ "level, the `Faithful` preset and the interface font; not one of "
+		+ "level, the `Faithful` preset, the interface font and the texture "
+		+ "sampling; not one of "
 		+ "the four it has and this remake does not -- and no language row "
 		+ "for a cache with one language")
 	# The language becomes a row when the cache offers a second one, and
@@ -1512,6 +1520,25 @@ func _screens(h: TestHarness) -> void:
 		_actions_of(bilingual).has("option:language"),
 		"a selector with two entries is a control")
 	_no_missing(h, "options_bilingual", bilingual)
+	# **The longest the screen gets** -- off the map with the difficulty row,
+	# and a second language -- still ends above *Back*: the texture row made
+	# it one row longer than the old spacing had room for.
+	var lowest: float = 0.0
+	var back_top: float = 1.0
+	for button: Button in _buttons_of(bilingual):
+		for connection: Dictionary in button.pressed.get_connections():
+			var callable: Callable = connection["callable"]
+			var bound: Array = callable.get_bound_arguments()
+			if bound.is_empty() or typeof(bound[0]) != TYPE_STRING:
+				continue
+			var action: String = bound[0]
+			if action == "back":
+				back_top = minf(back_top, button.anchor_top)
+			elif action.begins_with("option:"):
+				lowest = maxf(lowest, button.anchor_bottom)
+	h.check("screens.options_rows_end_above_back", lowest <= back_top,
+		"the last field's bottom %.3f against Back's top %.3f"
+		% [lowest, back_top])
 	bilingual.free()
 	var paused_bilingual: OptionsScreen = OptionsScreen.new()
 	paused_bilingual.settings = settings
@@ -1587,6 +1614,10 @@ func _screens(h: TestHarness) -> void:
 	# file gives.
 	h.check("settings.readable_font_by_default", not settings.game_font,
 		"the one place fidelity is traded for comfort by default")
+	h.check("screens.options_offer_texture_smoothing",
+		_actions_of(options).has("option:textures")
+		and _joined(options).contains(_strings.text("shell.textures.sharp")),
+		"docs/92 section 7.28 -- the row exists and shows the default")
 	# **The restriction is a hint, not a caption.** `Txtmod_h` 58 -- *Set
 	# Difficulty Level (only in main map during campaign)* -- is a sentence,
 	# and the caption column ends where the value field begins, so as a

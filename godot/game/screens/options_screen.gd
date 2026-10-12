@@ -45,6 +45,9 @@ const OWN_FAITHFUL: String = "shell.faithful"
 const OWN_FONT: String = "shell.font"
 const OWN_FONT_GAME: String = "shell.font.game"
 const OWN_FONT_READABLE: String = "shell.font.readable"
+const OWN_TEXTURES: String = "shell.textures"
+const OWN_TEXTURES_SHARP: String = "shell.textures.sharp"
+const OWN_TEXTURES_SMOOTH: String = "shell.textures.smooth"
 const OWN_LANGUAGE: String = "shell.language"
 const OWN_ON: String = "shell.on"
 const OWN_OFF: String = "shell.off"
@@ -75,8 +78,12 @@ var languages: PackedStringArray = PackedStringArray()
 ## units of the name field's pieces. Only the value is a gadget; the caption is
 ## text. Enumerated settings keep that shape; the two volumes use sliders so
 ## the whole range is visible and any level can be reached directly.
-const ROW_AT: Vector2 = Vector2(60.0, 96.0)
-const ROW_STEP: float = 34.0
+## Eleven rows at their longest -- three volumes, difficulty, gore,
+## `Faithful`, font, textures, controls and language -- have to end above
+## *Back*, so they start under the title and sit one unit apart (a field is
+## [constant CampaignScreen.GUI_BUTTON_HEIGHT], 31, tall).
+const ROW_AT: Vector2 = Vector2(60.0, 64.0)
+const ROW_STEP: float = 32.0
 const VALUE_X: float = 300.0
 const VALUE_WIDTH: int = 4
 ## Six of the field face's 32-unit pieces, exactly as a wide settings field.
@@ -141,6 +148,11 @@ func refresh() -> void:
 	_add_row("font", strings_own(OWN_FONT),
 		strings_own(OWN_FONT_GAME if settings.game_font
 			else OWN_FONT_READABLE))
+	# Texel by texel is what both renderers did by default, so it is the
+	# default here too -- [member GameSettings.smooth_textures].
+	_add_row("textures", strings_own(OWN_TEXTURES),
+		strings_own(OWN_TEXTURES_SMOOTH if settings.smooth_textures
+			else OWN_TEXTURES_SHARP))
 	_add_row("controls", strings_own("touch.controls"),
 		strings_own("touch.mode.%d" % settings.control_mode), strings_own("touch.help"))
 	if languages.size() > 1 and not in_mission:

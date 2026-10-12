@@ -78,6 +78,9 @@ signal cd_program(program: String)
 ## The manifest -- `tables/sequences.json` -- and where the directories are.
 var manifest: Dictionary = {}
 var cache_dir: String = ""
+## [member GameSettings.smooth_textures], handed to every library this
+## player opens.
+var smooth_textures: bool = false
 ## Which logical id is loaded, and where in it the player stands.
 var logical_id: int = -1
 var part: int = -1
@@ -232,7 +235,8 @@ func _install_part(index: int) -> bool:
 	var directory: String = DictRead.as_string(entry["directory"])
 	_drop_shot()
 	if _library == null or _library.directory != directory:
-		_library = SequenceLibrary.open_directory(cache_dir, directory)
+		_library = SequenceLibrary.open_directory(cache_dir, directory,
+			smooth_textures)
 		if _library == null:
 			_note_missing("sequences/" + directory)
 			return false

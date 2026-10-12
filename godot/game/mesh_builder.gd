@@ -88,9 +88,13 @@ const ROOT_SCOPE: int = -1
 
 ## `textures` is `{"plain": {id: Texture2D}, "keyed": {id: Texture2D}}`.  The
 ## keyed copies carry alpha 0 wherever the texel is exactly black, which is
-## what draw kind `0x14` treats as a hole.
+## what draw kind `0x14` treats as a hole; [method keyed_texture] makes each
+## the first time a face asks for it.
 const PLAIN: String = "plain"
 const KEYED: String = "keyed"
+## `{id: path}` of each texture's PNG, which [method keyed_texture] decodes
+## again rather than reading a texture back from the renderer.
+const SOURCES: String = "sources"
 ## `{name: id}` for the world set in use, added by [method load_textures] so a
 ## face can name its texture instead of numbering it.
 const BY_NAME: String = "by_name"
@@ -98,6 +102,12 @@ const BY_NAME: String = "by_name"
 ## the renderer draws a byte as it is.  The bank's textures already carry it;
 ## a flat face's colour goes through it in [method _surface].
 const CURVE: String = "curve"
+## Whether the bank's textures are sampled smoothed rather than texel by texel
+## -- [member GameSettings.smooth_textures]. Absent means not.
+const SMOOTH: String = "smooth"
+## The meta every material [method material_for] gives a texture carries, so
+## [method set_smooth] can find them among everything else a tree holds.
+const SMOOTHABLE_META: StringName = &"mesh_builder_texture"
 
 ## The key a face of the **shared unit geometry** carries instead of `texture`.
 ##
@@ -485,7 +495,7 @@ static func material_for(kind: int, texture: int,
 		textures: Dictionary) -> StandardMaterial3D:
 	var material: StandardMaterial3D = StandardMaterial3D.new()
 	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	material.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
+	apply_sampling(material, DictRead.as_bool(textures.get(SMOOTH, false)))
 	# **One-sided, the way the engine draws them.** docs/31 section 4.2: every
 	# face names a plane, and the leaf walker (`Eng3d.dll` `0x405203`..
 	# `0x405230`) draws it only when `plane_value - plane_d < 0`. `plane_value`
@@ -515,12 +525,13 @@ static func material_for(kind: int, texture: int,
 	# under Mobile before it was set).
 	material.vertex_color_is_srgb = true
 
-	var keyed: bool = kind == KIND_TEXTURE_MASKED
-	var bank: Dictionary = DictRead.as_dict(
-		textures.get(KEYED if keyed else PLAIN, {}))
-	if texture != NO_TEXTURE and bank.has(texture):
-		var image: Texture2D = bank[texture]
+	var image: Texture2D = null
+	if texture != NO_TEXTURE:
+		image = keyed_texture(textures, texture) \
+			if kind == KIND_TEXTURE_MASKED else plain_texture(textures, texture)
+	if image != null:
 		material.albedo_texture = image
+		material.set_meta(SMOOTHABLE_META, true)
 
 	match kind:
 		KIND_FLAT_BLEND:
@@ -552,16 +563,72 @@ static func material_for(kind: int, texture: int,
 	return material
 
 
+## How a bank texture is sampled: texel by texel, as both shipped renderers do
+## by default, or smoothed -- [member GameSettings.smooth_textures].
+##
+## **Smoothed is bilinear with the coordinates clamped and no mipmaps**, which
+## is the texture state `ENG3DFX.DLL` hands Glide (docs/31 section 4.8). It is
+## offered as the remake's own option and not as the accelerated build's
+## picture: that build's frame has never been observed (docs/92 section 7.28).
+## Clamping changes nothing a face can reach -- every shipped `(u, v)` lies
+## inside its page -- and keeps a filtered edge from reaching across to the
+## opposite one.
+static func apply_sampling(material: BaseMaterial3D, smooth: bool) -> void:
+	if not smooth:
+		material.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
+		material.texture_repeat = true
+		return
+	material.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR
+	# TODO: graphics experiment (INC_GFX=mips) -- the pages are atlases, so a
+	# full mip chain bleeds neighbouring tiles into each other at a distance
+	# (docs/92 section 7.28); not a setting until that is solved.
+	if gfx("mips"):
+		material.texture_filter = \
+			BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS_ANISOTROPIC
+	material.texture_repeat = false
+
+
+## Switch every bank-textured material under `root` to `smooth` sampling.
+##
+## The materials are built once per scene, so a change made on the options
+## screen has to reach the ones already on screen; the banks' own [constant
+## SMOOTH] flag decides the ones built afterwards. Only materials [method
+## material_for] gave a texture are touched -- the overlay, the markers and
+## the effect sprites keep their own sampling. Returns how many changed.
+static func set_smooth(root: Node, smooth: bool) -> int:
+	var changed: int = 0
+	if root == null:
+		return changed
+	var pending: Array[Node] = [root]
+	while not pending.is_empty():
+		var node: Node = pending.pop_back()
+		pending.append_array(node.get_children())
+		var instance: MeshInstance3D = node as MeshInstance3D
+		if instance == null or instance.mesh == null:
+			continue
+		for surface: int in range(instance.mesh.get_surface_count()):
+			var material: BaseMaterial3D = \
+				instance.mesh.surface_get_material(surface) as BaseMaterial3D
+			if material == null or not material.has_meta(SMOOTHABLE_META):
+				continue
+			apply_sampling(material, smooth)
+			changed += 1
+	return changed
+
+
 ## Loads every PNG the cache's texture index names, keyed by its id, plus a
 ## colour-keyed copy of each for draw kind `0x14`.
 ##
 ## The keyed copies are built for every texture rather than only for the ids a
 ## masked face actually names: the whole set is ten images on the slice's lead
 ## mission, and deciding needs the geometry, which this does not have.
+##
+## *smooth* is the bank's [constant SMOOTH] flag, which [method material_for]
+## reads.
 static func load_textures(cache_dir: String, world_set: String,
-		index: Dictionary) -> Dictionary:
+		index: Dictionary, smooth: bool = false) -> Dictionary:
 	var plain: Dictionary = {}
-	var keyed: Dictionary = {}
+	var sources: Dictionary = {}
 	var by_name: Dictionary = {}
 	# The renderer's curve is applied here, once per bank, so every consumer
 	# of the bank -- scenery, bodies, the effect atlas, the cutscenes -- draws
@@ -585,14 +652,74 @@ static func load_textures(cache_dir: String, world_set: String,
 		if loaded != OK:
 			continue
 		var id: int = DictRead.as_int(record["id"])
-		if not curve.is_empty():
-			# Before the key: the table maps black to black, so the hole a
-			# masked face reads is the same texel it was.
-			image = PaletteCurve.remap(image, curve)
+		image = _prepared(image, curve)
 		plain[id] = ImageTexture.create_from_image(image)
-		keyed[id] = ImageTexture.create_from_image(colour_key(image))
+		sources[id] = path
 		by_name[DictRead.as_string(record["name"])] = id
-	return {PLAIN: plain, KEYED: keyed, BY_NAME: by_name, CURVE: curve}
+	return {PLAIN: plain, KEYED: {}, SOURCES: sources, BY_NAME: by_name,
+		CURVE: curve, SMOOTH: smooth}
+
+
+## The bank's texture `id`, or null.
+static func plain_texture(textures: Dictionary, id: int) -> Texture2D:
+	var bank: Dictionary = DictRead.as_dict(textures.get(PLAIN, {}))
+	var found: Texture2D = bank.get(id, null)
+	return found
+
+
+## The colour-keyed copy of the bank's texture `id`, made on first use and
+## kept in the bank, or null.
+##
+## **Lazily, because [method colour_key] is the expensive half of a bank** and
+## only the draw kind `0x14` reads it -- 2 673 faces of 236 861, a handful of
+## pages per world set. Building it for every page cost a quarter of a second
+## per world set before the hole fill, and four times that after it.
+static func keyed_texture(textures: Dictionary, id: int) -> Texture2D:
+	if not textures.has(KEYED):
+		textures[KEYED] = {}
+	var bank: Dictionary = textures[KEYED]
+	if bank.has(id):
+		var kept: Texture2D = bank[id]
+		return kept
+	var sources: Dictionary = DictRead.as_dict(textures.get(SOURCES, {}))
+	if not sources.has(id):
+		return null
+	var image: Image = Image.new()
+	if image.load_png_from_buffer(FileAccess.get_file_as_bytes(
+			DictRead.as_string(sources[id]))) != OK:
+		return null
+	var curve: PackedByteArray = textures.get(CURVE, PackedByteArray())
+	var keyed: Image = colour_key(_prepared(image, curve, false))
+	_experimental_mipmaps(keyed)
+	var made: ImageTexture = ImageTexture.create_from_image(keyed)
+	bank[id] = made
+	return made
+
+
+## The decoded page as the renderer is to draw it: through the curve and, on
+## the experiment switch, with mipmaps.
+static func _prepared(image: Image, curve: PackedByteArray,
+		mipmaps: bool = true) -> Image:
+	var out: Image = image
+	if not curve.is_empty():
+		# Before any key: the table maps black to black, so the hole a masked
+		# face reads is the same texel it was.
+		out = PaletteCurve.remap(out, curve)
+	if mipmaps:
+		_experimental_mipmaps(out)
+	return out
+
+
+## TODO: graphics experiment (INC_GFX=mips), see [method apply_sampling].
+static func _experimental_mipmaps(image: Image) -> void:
+	if gfx("mips"):
+		var _made: Error = image.generate_mipmaps()
+
+
+## TODO: graphics experiment -- whether `flag` is in the comma-separated
+## `INC_GFX` environment variable (`mips`, `msaa4`); see docs/92 section 7.28.
+static func gfx(flag: String) -> bool:
+	return OS.get_environment("INC_GFX").split(",").has(flag)
 
 
 ## A copy of `image` with alpha 0 wherever the texel is exactly black.
@@ -600,15 +727,60 @@ static func load_textures(cache_dir: String, world_set: String,
 ## RGB565 `0x0000` is the engine's key and expands to `(0, 0, 0)`, so the test
 ## is exact rather than a threshold: a dark-but-not-black texel is opaque in
 ## the original and stays opaque here.
+##
+## **A hole keeps the mean colour of its opaque 8-neighbours**, at alpha 0.
+## Sampled texel by texel the colour of a hole is never seen -- the scissor
+## discards it -- but a smoothed sample at a hole's edge mixes it in, and
+## black there drew a dark fringe round every grille. Doing it for every bank
+## lets [method set_smooth] switch a scene that is already built.
 static func colour_key(image: Image) -> Image:
-	var out: Image = Image.create_empty(image.get_width(), image.get_height(),
-		false, Image.FORMAT_RGBA8)
-	for y: int in range(image.get_height()):
-		for x: int in range(image.get_width()):
-			var pixel: Color = image.get_pixel(x, y)
-			if pixel.r8 == 0 and pixel.g8 == 0 and pixel.b8 == 0:
-				out.set_pixel(x, y, Color(0.0, 0.0, 0.0, 0.0))
-			else:
-				pixel.a = 1.0
-				out.set_pixel(x, y, pixel)
-	return out
+	var source: Image = image
+	if source.get_format() != Image.FORMAT_RGB8:
+		source = image.duplicate()
+		source.convert(Image.FORMAT_RGB8)
+	var width: int = source.get_width()
+	var height: int = source.get_height()
+	var rgb: PackedByteArray = source.get_data()
+	# One pass for the key, so a hole's neighbours are tested by index rather
+	# than by reading pixels back: most holes are interior and never reach
+	# the colour sum, which kept this within the old cost.
+	var hole: PackedByteArray = PackedByteArray()
+	hole.resize(width * height)
+	for at: int in range(width * height):
+		var byte: int = at * 3
+		hole[at] = 1 if rgb[byte] == 0 and rgb[byte + 1] == 0 \
+			and rgb[byte + 2] == 0 else 0
+	var rgba: PackedByteArray = PackedByteArray()
+	rgba.resize(width * height * 4)
+	for y: int in range(height):
+		for x: int in range(width):
+			var at: int = y * width + x
+			var to: int = at * 4
+			var from: int = at * 3
+			if hole[at] == 0:
+				rgba[to] = rgb[from]
+				rgba[to + 1] = rgb[from + 1]
+				rgba[to + 2] = rgb[from + 2]
+				rgba[to + 3] = 255
+				continue
+			var red: int = 0
+			var green: int = 0
+			var blue: int = 0
+			var count: int = 0
+			for ny: int in range(maxi(y - 1, 0), mini(y + 2, height)):
+				for nx: int in range(maxi(x - 1, 0), mini(x + 2, width)):
+					var near: int = ny * width + nx
+					if hole[near] != 0:
+						continue
+					red += rgb[near * 3]
+					green += rgb[near * 3 + 1]
+					blue += rgb[near * 3 + 2]
+					count += 1
+			if count > 0:
+				rgba[to] = roundi(float(red) / float(count))
+				rgba[to + 1] = roundi(float(green) / float(count))
+				rgba[to + 2] = roundi(float(blue) / float(count))
+			# The alpha stays 0 and a hole with no opaque neighbour stays
+			# black: `resize` zero-fills.
+	return Image.create_from_data(width, height, false, Image.FORMAT_RGBA8,
+		rgba)

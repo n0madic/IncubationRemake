@@ -561,6 +561,9 @@ func _ready() -> void:
 	# server needs a few more frames to let go of a playing Ogg stream, and a
 	# quit in the same frame leaks it. See [method AudioSystem.shutdown].
 	get_tree().auto_accept_quit = false
+	# TODO: graphics experiment (INC_GFX), not a setting yet.
+	if MeshBuilder.gfx("msaa4"):
+		get_viewport().msaa_3d = Viewport.MSAA_4X
 	# Android's Back has its own automatic-quit gate, separate from window close.
 	get_tree().quit_on_go_back = false
 	_install_debug_status()
@@ -2350,6 +2353,7 @@ func play_sequence(id: int, full: bool, kind: String) -> CampaignScreen:
 		if full else CampaignScreen.PLATE_WINDOW
 	var player: SequencePlayer = SequencePlayer.new()
 	player.name = "Sequence"
+	player.smooth_textures = settings.smooth_textures
 	if not player.create(_cache_dir, _sequence_manifest, id, window,
 			CampaignScreen.PLATE_SIZE):
 		player.free()
@@ -2791,6 +2795,9 @@ func _step_option(name: String) -> void:
 			# Every plate and the HUD are rebuilt from one place, so the
 			# choice cannot land on some of them and not others.
 			_reapply_font()
+		"textures":
+			settings.smooth_textures = not settings.smooth_textures
+			_reapply_texture_sampling()
 		_:
 			return
 	settings.apply_audio(_audio, _events)
@@ -2846,6 +2853,20 @@ func _reapply_font() -> void:
 		var _again: CampaignScreen = _show_shell_screen()
 	elif _screen != null and campaign != null:
 		var _back: CampaignScreen = show_campaign_screen(campaign.screen)
+
+
+## [member GameSettings.smooth_textures], applied to what is already built and
+## to what will be: every cached bank carries the flag [method
+## MeshBuilder.material_for] reads, and every bank-textured material in the
+## tree -- the mission, the backdrop, a body in a `SubViewport` -- is switched
+## where it stands. Presentation only, so the mirror and the hash are not
+## involved.
+func _reapply_texture_sampling() -> void:
+	for bank: Variant in _texture_cache.values():
+		DictRead.as_dict(bank)[MeshBuilder.SMOOTH] = settings.smooth_textures
+	if not _textures.is_empty():
+		_textures[MeshBuilder.SMOOTH] = settings.smooth_textures
+	var _changed: int = MeshBuilder.set_smooth(self, settings.smooth_textures)
 
 
 func close_campaign_screen() -> void:
@@ -4391,7 +4412,7 @@ func _textures_for(world_set: String) -> Dictionary:
 		var index: Dictionary = CacheLoader.read_json(
 			"%s/textures/%s/index.json" % [_cache_dir, world_set])
 		_texture_cache[world_set] = MeshBuilder.load_textures(
-			_cache_dir, world_set, index)
+			_cache_dir, world_set, index, settings.smooth_textures)
 	return DictRead.as_dict(_texture_cache[world_set])
 
 

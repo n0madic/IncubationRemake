@@ -45,6 +45,7 @@ func run(h: TestHarness) -> void:
 	_check_winding(h)
 	_check_draw_kinds(h)
 	_check_colour_key(h)
+	_check_sampling(h)
 	_check_corpus_kinds(h)
 	_check_overdraw(h)
 	_check_palette_curve(h)
@@ -245,6 +246,86 @@ func _check_colour_key(h: TestHarness) -> void:
 	h.equal("key.black_is_a_hole", keyed.get_pixel(0, 0).a, 0.0)
 	h.equal("key.near_black_is_opaque", keyed.get_pixel(1, 0).a, 1.0,
 		"the key is RGB565 0x0000 exactly, not a darkness threshold")
+	# A hole takes the mean of its opaque neighbours, so a smoothed sample at
+	# its edge does not pull black in; a hole with none stays black.
+	var grille: Image = Image.create_empty(3, 1, false, Image.FORMAT_RGB8)
+	grille.set_pixel(0, 0, Color8(200, 100, 0))
+	grille.set_pixel(1, 0, Color8(0, 0, 0))
+	grille.set_pixel(2, 0, Color8(100, 0, 200))
+	var filled: Color = MeshBuilder.colour_key(grille).get_pixel(1, 0)
+	h.equal("key.hole_takes_its_neighbours_colour",
+		[filled.r8, filled.g8, filled.b8, filled.a8], [150, 50, 100, 0],
+		"still a hole, coloured like its edge")
+	var lone: Image = Image.create_empty(1, 1, false, Image.FORMAT_RGB8)
+	lone.set_pixel(0, 0, Color8(0, 0, 0))
+	h.equal("key.lone_hole_stays_black",
+		MeshBuilder.colour_key(lone).get_pixel(0, 0), Color(0.0, 0.0, 0.0, 0.0))
+
+	# The keyed copy is made from the page's PNG the first time a masked face
+	# asks, and kept: the bank does not build one per page up front.
+	var path: String = "user://test_mesh_keyed.png"
+	h.equal("key.lazy.fixture_written", grille.save_png(path), OK)
+	var bank: Dictionary = {MeshBuilder.PLAIN: {}, MeshBuilder.KEYED: {},
+		MeshBuilder.SOURCES: {7: path}}
+	var first: Texture2D = MeshBuilder.keyed_texture(bank, 7)
+	var hole: Color = first.get_image().get_pixel(1, 0) if first != null \
+		else Color(1.0, 1.0, 1.0, 1.0)
+	h.equal("key.lazy.built_from_the_source", [hole.a8, hole.r8], [0, 150])
+	h.check("key.lazy.kept_in_the_bank",
+		first != null and MeshBuilder.keyed_texture(bank, 7) == first)
+	h.check("key.lazy.unknown_page_is_null",
+		MeshBuilder.keyed_texture(bank, 8) == null)
+	var _gone: Error = DirAccess.remove_absolute(
+		ProjectSettings.globalize_path(path))
+
+
+## docs/92 section 7.28: texel by texel unless the bank says smooth, and the
+## switch reaches a material already in a tree without touching any other.
+func _check_sampling(h: TestHarness) -> void:
+	var page: ImageTexture = ImageTexture.create_from_image(
+		Image.create_empty(2, 2, false, Image.FORMAT_RGB8))
+	var sharp_bank: Dictionary = {MeshBuilder.PLAIN: {0: page},
+		MeshBuilder.KEYED: {0: page}}
+	var sharp: StandardMaterial3D = MeshBuilder.material_for(
+		MeshBuilder.KIND_TEXTURE_PERSP, 0, sharp_bank)
+	h.equal("sampling.sharp_by_default",
+		[sharp.texture_filter, sharp.texture_repeat],
+		[BaseMaterial3D.TEXTURE_FILTER_NEAREST, true],
+		"the software renderer's nearest texel, wrapping mod 256")
+	var smooth_bank: Dictionary = sharp_bank.duplicate()
+	smooth_bank[MeshBuilder.SMOOTH] = true
+	var smooth: StandardMaterial3D = MeshBuilder.material_for(
+		MeshBuilder.KIND_TEXTURE_MASKED, 0, smooth_bank)
+	h.equal("sampling.smooth_is_bilinear_and_clamped",
+		[smooth.texture_filter, smooth.texture_repeat],
+		[BaseMaterial3D.TEXTURE_FILTER_LINEAR, false],
+		"guTexAllocateMemory's state: filter 1/1, clamp 1/1, one LOD")
+
+	var root: Node3D = Node3D.new()
+	var built: MeshInstance3D = MeshInstance3D.new()
+	var mesh: ArrayMesh = ArrayMesh.new()
+	var arrays: Array = []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = PackedVector3Array([Vector3.ZERO,
+		Vector3.RIGHT, Vector3.UP])
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	mesh.surface_set_material(0, sharp)
+	var foreign: StandardMaterial3D = StandardMaterial3D.new()
+	foreign.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
+	mesh.surface_set_material(1, foreign)
+	built.mesh = mesh
+	root.add_child(built)
+	h.equal("sampling.switch_reaches_only_bank_materials",
+		[MeshBuilder.set_smooth(root, true), sharp.texture_filter,
+		foreign.texture_filter],
+		[1, BaseMaterial3D.TEXTURE_FILTER_LINEAR,
+		BaseMaterial3D.TEXTURE_FILTER_NEAREST],
+		"the overlay, the markers and the sprites keep their own sampling")
+	var _back: int = MeshBuilder.set_smooth(root, false)
+	h.equal("sampling.switch_back", sharp.texture_filter,
+		BaseMaterial3D.TEXTURE_FILTER_NEAREST)
+	root.free()
 
 
 ## Which kinds the slice's own geometry contains.  Pinned so that a kind

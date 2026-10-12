@@ -12,7 +12,7 @@ extends RefCounted
 ## that list until the unit speech of docs/99 section 8 shipped; it is a row
 ## again since 2026-09-13.
 ##
-## The six that are connected:
+## The ones that are connected:
 ##
 ## | Setting | Where it lands |
 ## |---|---|
@@ -23,6 +23,7 @@ extends RefCounted
 ## | gore level | [member World.gore_level] |
 ## | `Faithful` | [constant AudioEvents.COMPAT_FLAGS] and [constant GAMEPLAY_CORRECTION_FLAGS] |
 ## | the interface font | every [Label] and [Button] the game draws |
+## | texture smoothing | every bank texture, [method MeshBuilder.apply_sampling] |
 ##
 ## **Difficulty is the default for a new campaign, not the live value.** The
 ## authority is [member CampaignState.difficulty] -- section 7.15's S6 -- and
@@ -94,6 +95,16 @@ var faithful: bool = true
 ## the remake trades fidelity for comfort by default -- this one does, because
 ## the alternative is text the player cannot read.
 var game_font: bool = false
+## Whether the 3D textures are sampled smoothed instead of texel by texel --
+## docs/92 section 7.28.
+##
+## **Off by default, because texel by texel is what was seen.** The software
+## renderer samples the nearest texel; the accelerated build handed Glide a
+## bilinear, clamped, mipmap-free texture state (docs/31 section 4.8), but no
+## frame of that build has been observed, so the option is the remake's own
+## and is not named after it. Presentation only: nothing it touches enters a
+## save or the canonical hash.
+var smooth_textures: bool = false
 ## Whether `aGameIntro`'s title plate has already been sat through once.
 ##
 ## The original waits for a key or a click on *Start Game* on **every** launch
@@ -157,6 +168,10 @@ func load_from_disk() -> bool:
 		GORE_MIN, GORE_MAX)
 	faithful = DictRead.as_bool(document.get("faithful", faithful))
 	game_font = DictRead.as_bool(document.get("game_font", game_font))
+	# No schema bump, on the `speech_volume` precedent: a file from before the
+	# row reads as the default.
+	smooth_textures = DictRead.as_bool(document.get("smooth_textures",
+		smooth_textures))
 	seen_splash = DictRead.as_bool(document.get("seen_splash", seen_splash))
 	var mode: int = DictRead.as_int(document.get("control_mode", ControlMode.AUTO))
 	control_mode = mode as ControlMode if mode >= ControlMode.AUTO \
@@ -187,6 +202,7 @@ func view() -> Dictionary:
 		"gore_level": gore_level,
 		"faithful": faithful,
 		"game_font": game_font,
+		"smooth_textures": smooth_textures,
 		"seen_splash": seen_splash,
 		"control_mode": int(control_mode),
 		"language": language,

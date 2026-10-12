@@ -3017,6 +3017,63 @@ since a save is not the way past a mission that has been passed and Instant
 Action has no campaign to come back to. `test_shell.gd` pins the three
 screens' rows; the route was driven on `_C_100` through `gamecontrol 4 1`.
 
+### 7.28 Smoothed textures are a setting, and are not called 3dfx (2026-10-12)
+
+Both shipped renderers draw the same 256 × 256 RGB565 pages. The software
+one reads the nearest texel; the Glide one allocates every page **bilinear,
+clamped, with a single LOD** ([`31` §4.8](31-prototyp-geometry.md), read
+from `guTexAllocateMemory`'s arguments). The remake has drawn texel by
+texel since Slice 1. Three decisions.
+
+**Smoothing is an option, off by default.** `GameSettings.smooth_textures`,
+the *Textures: sharp / smooth* row of the options screen and `option
+textures` on the agent. Off is what was seen; on is bilinear with the
+coordinates clamped and no mipmaps, which is the texture state the Glide
+build asks for. It is presentation only -- no save, no canonical hash -- and
+switching it reaches the scene already on screen (`MeshBuilder.set_smooth`
+walks every material the bank textured; each cached bank carries the flag
+for what is built later, and a cutscene's library is opened with it).
+
+**It is not named after the accelerated build.** The texture state is read;
+the picture is not. No Glide frame has been observed -- nGlide under Wine on
+this host stops at the display-mode change ([`91` §6](91-wine-runtime-probes.md),
+re-tried on Wine 11.17) -- and two things between the state and the screen
+are unknown: what Voodoo's chroma key does to a filtered edge, and what the
+16-bit framebuffer's dither adds. A row called *3dfx* would claim a match
+nobody has checked.
+
+**What smoothing touches, and what it does not.** Every bank-textured
+material: scenery, special objects, bodies, cutscene models. Not the effect
+sprites: their atlas is a grid of small tiles, and a bilinear sample at a
+tile's edge reads the next tile. Not the ground overlay or the map markers,
+which are interface art. The colour-keyed copies now give every hole the
+mean colour of its opaque neighbours, at alpha 0, whatever the setting --
+invisible texel by texel, where the scissor discards the hole, and what keeps
+a smoothed grille from growing a black fringe. The fill made the key pass
+four to seven times dearer, so the keyed copies are now made **on first use**
+(`MeshBuilder.keyed_texture`, from the page's PNG) instead of for every page:
+only kind `0x14` reads them, one to eight pages per world set. A bank loads
+in 260 ms instead of 490 on `World_A00` and 157 instead of 300 on
+`World_I00`, and a keyed page costs about 25 ms when a scene first needs it.
+Texel by texel the picture is unchanged: `_C_141`'s deployment view is
+pixel-identical before and after.
+
+**Measured before choosing, not after.** A census over all 232 384 textured
+faces found the pages are **atlases**: 572 of 674 (container, texture)
+pairs are used through disjoint sub-rectangles, and of the edges two faces
+share, 162 142 continue the mapping and 198 423 are seams. Sampling the
+decoded pages at every face edge, a bilinear sample at the edge departs from
+the inside texel by a median 18.9 levels on seams against 16.5 on continuous
+edges (p90 63 against 52), so smoothing adds little at a seam beyond its
+ordinary blur -- half a texel, the same half texel Glide had. A full mip
+chain does not: at level 2 the seams' p90 is 100, and in the far view
+`_C_141`'s small crates visibly lose their colour to their neighbours in the
+atlas. **Mipmaps are therefore not offered** until a shader clamps each face
+to its own rectangle or the chain is cut short; they stay behind the
+`INC_GFX=mips` experiment switch, as does `INC_GFX=msaa4` (MSAA 4x, whose
+effect on these scenes measured 0.1--0.2 levels on average -- the jaggedness
+here is texels, not edges). Both switches are marked `TODO:` in the code.
+
 ---
 
 ## 8. Standing constraints

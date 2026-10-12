@@ -29,7 +29,7 @@ var index: Dictionary = {}
 ## Open one directory, or `null` when the cache does not carry it -- a cache
 ## published by a converter before 0.29.0.
 static func open_directory(cache_dir: String,
-		video_directory: String) -> SequenceLibrary:
+		video_directory: String, smooth: bool = false) -> SequenceLibrary:
 	var base: String = "%s/%s/%s" % [cache_dir, SEQUENCES_DIR, video_directory]
 	var listing: Dictionary = CacheLoader.read_json(base + "/index.json")
 	if listing.is_empty():
@@ -47,7 +47,7 @@ static func open_directory(cache_dir: String,
 	var textures: Dictionary = CacheLoader.read_json(
 		"%s/textures/%s/index.json" % [cache_dir, texture_set])
 	library._textures = MeshBuilder.load_textures(cache_dir, texture_set,
-		textures)
+		textures, smooth)
 	return library
 
 

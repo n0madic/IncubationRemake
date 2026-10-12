@@ -934,6 +934,56 @@ The remake carries the derivation as a face field, `overdraw` -- how many
 layers of coplanar faces cover this one -- and its mesh builder recedes each
 layer by sixteen world units along the face normal.
 
+### 4.8 How the Glide build samples a texture — **[code]** *(2026-10-12)*
+
+The software renderer reads one texel per pixel (§4.6: `mov ax, word
+[ebx+ebx]`, the index wrapping mod 256). `ENG3DFX.DLL` hands each texture
+page to Glide through **one** `guTexAllocateMemory` call (`0x402508`, in
+`_E3DCARD_set_texture_page_size`'s body at `0x4025C0`), and every texture
+property of the page is an argument there. Read against Glide 2.x's own
+`glide.h` (the `sst1` tree; the 15-argument prototype, `GR_TEXTUREFILTER_*`,
+`GR_TEXTURECLAMP_*`, `GR_LOD_*`, `GR_ASPECT_*`, `GR_TEXFMT_*`):
+
+| Argument | Pushed | Meaning |
+|---|---|---|
+| `tmu` | `0` | TMU 0 |
+| `odd_even_mask` | `3` | `GR_MIPMAPLEVELMASK_BOTH` |
+| `format` | `[0x482108]` = `0xa` | `GR_TEXFMT_RGB_565` |
+| `mm_mode` | `1` | `GR_MIPMAP_NEAREST` -- moot, see the LODs |
+| `small_lod`, `large_lod` | `[0x4820FC]`, `[0x482100]`, both `0` | `GR_LOD_256`: **one** level, no mip chain |
+| `aspect` | `[0x482104]` = `3` | `GR_ASPECT_1x1` |
+| `s_clamp`, `t_clamp` | `1`, `1` | `GR_TEXTURECLAMP_CLAMP` |
+| `minfilter`, `magfilter` | `1`, `1` | `GR_TEXTUREFILTER_BILINEAR` |
+| `lod_bias`, `trilinear` | `0`, `0` | none |
+
+The LODs are `0` on the branch for the default page size `0x20000` bytes
+(`[0x410B24]`, 256 × 256 × 2) and `1` -- a 128 × 128 page -- otherwise; the
+only way to change the size is `_E3DCARD_set_texture_page_size`, ordinal
+87, which `Incubation.exe` never binds (§10.1). `grTexFilterMode`,
+`grTexMipMapMode`, `grTexClampMode` and `grTexLodBiasValue` are imported and
+**called from nowhere** in the DLL, so nothing overrides the allocation's
+state. Every shipped `(u, v)` lies inside its page (`0 … 32767`, §4.6), so
+the clamp changes nothing a face reaches; the filter changes what every
+textured pixel looks like.
+
+What this does not settle is the **picture**: no frame of the Glide build
+has been observed (the bundled nGlide path does not reach a game frame under
+Wine on this host, [`91` §6](91-wine-runtime-probes.md)), and the chroma key
+of kind `0x14` (`grChromakeyMode`, two call sites) is applied by the
+hardware to a filtered texel, whose edge the code cannot show. The remake's
+smoothed sampling ([`92` §7.28](92-remake-architecture.md)) is therefore its
+own option, not a reproduction of this build.
+
+**The same build fogs one screen.** `_E3DCARD_set_fogging_linear` is a
+stub in `Eng3d.dll` -- ordinals 70, 71 and 72 all export `0x4024C0` -- and
+real in `ENG3DFX.DLL` (`guFogGenerateLinear`, `grFogTable`,
+`grFogColorValue`). `Incubation.exe` reaches it through `0x00462030`, which
+returns at once unless the display mode `[0x00512A78]` is 3, the
+accelerator's, and its only caller is `aCreateBattleMap` `0x00457590`, the
+campaign map's screen: black, linear, from 640 000 to 1 440 000 units
+(`push 0x15F900; push 0x9C400; push 0; push 0; push 0` at `0x0045764F`). No
+call on the battle view was found (**UNVERIFIED** beyond that one caller).
+
 ---
 
 ## 5. Sub-objects (`part_push` / `part_pop`)
@@ -1279,6 +1329,17 @@ What remains is either outside this container or unreachable from shipped data.
    order follows the camera -- take the tree's own order: `L060EA00`,
    `LEVEL01D.002` and `MAP2.006` in `World_A00`, `L072E*` in `E00`/`F00`,
    `L013EH00` in `H00`, and eighteen sequence models.
+
+9. **What the Glide build's frame looks like.** §4.8 reads its texture
+   state -- bilinear, clamped, one LOD -- from the allocation call, but the
+   frame is unobserved: what the Voodoo chroma key (`grChromakeyMode`) does
+   to a bilinear-filtered edge of a kind `0x14` grille, and what the 16-bit
+   framebuffer's dither adds, cannot be read from `ENG3DFX.DLL`. Tried
+   2026-10-12 on Wine 11.17: the bundled nGlide loads (`glide2x.dll`,
+   `ENG3DFX.DLL`) and then stops where [`91` §6](91-wine-runtime-probes.md)
+   recorded, `NtUserChangeDisplaySettings` returning -2 and
+   `GL_INVALID_FRAMEBUFFER_OPERATION`, with no game window. A Windows host
+   with nGlide, or a real Voodoo, would answer it.
 
 ---
 
