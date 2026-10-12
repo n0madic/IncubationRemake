@@ -127,7 +127,7 @@ const VERBS: Dictionary[String, String] = {
 	"note": "note TEXT -- one line in the reply's log",
 	"menu": "menu [NAME] -- raise the shell at one of its screens, or toggle it",
 	"slot": "slot N [load|save [NAME...]] -- read or write one numbered slot",
-	"option": "option NAME VALUE -- music|fx|speech|difficulty|gore|faithful|font|textures|controls",
+	"option": "option NAME VALUE -- music|fx|speech|difficulty|gore|faithful|font|graphics|controls",
 	"campaign": "campaign N -- begin chain N and load its first mission",
 	"location": "location N -- click a location on the campaign map",
 	"deploy": "deploy SLOT X Y [FACING] -- put one roster record on a "
@@ -876,10 +876,13 @@ func _v_option(parts: PackedStringArray, _line: String) -> void:
 			settings.game_font = value.to_lower() in ["1", "true", "on",
 				"yes", "game"]
 			_main._reapply_font()
-		"textures":
-			settings.smooth_textures = value.to_lower() in ["1", "true", "on",
-				"yes", "smooth"]
-			_main._reapply_texture_sampling()
+		"graphics":
+			# A number or a preset's name: original, smooth, enhanced.
+			var named: int = ["original", "smooth", "enhanced"].find(
+				value.to_lower())
+			settings.graphics = GraphicsMode.clamped(named if named >= 0
+				else value.to_int())
+			_main.apply_graphics()
 		_:
 			_log.append("option: no such setting %s" % name)
 			return

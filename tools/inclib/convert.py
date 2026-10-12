@@ -62,6 +62,8 @@ from .png import rgb_png_bytes, write_indexed_png, write_rgb_png
 MAP_SCHEMA = "incubation.map/1"
 GEOMETRY_SCHEMA = "incubation.geometry/1"
 TEXTURE_SCHEMA = "incubation.textures/1"
+#: The texture PNGs' colour depth -- ``docs/92`` §7.29.
+TEXTURE_PRECISION = "rgb888"
 
 #: ``docs/30`` §2.5 -- the loader shifts ``.3DW`` positions and angles by 4 and
 #: permutes the axes.  The cache stores the result, so nothing downstream has to
@@ -628,13 +630,20 @@ _TEXTURE_PNGS: dict[bytes, tuple[int, int, bytes]] = {}
 
 
 def _texture_png(record: bytes) -> tuple[int, int, bytes]:
-    """The decoded PNG for one VISN record, decoding it at most once."""
+    """The decoded PNG for one VISN record, decoding it at most once.
+
+    **The exact 24-bit picture, not the engine's RGB565** (``docs/92``
+    §7.29): the original's quantised one derives from it bit for bit
+    (:func:`visn.derive_rgb565`, pinned on all 723 records by
+    ``visn_decode.py --check``), so the loader draws either from one file.
+    """
     key = hashlib.sha256(record).digest()
     made = _TEXTURE_PNGS.get(key)
     if made is None:
-        image = visnmod.decode_record(record)
+        image = visnmod.decode_record(record, exact=True)
+        assert image.exact is not None
         made = (image.width, image.height,
-                rgb_png_bytes(image.width, image.height, image.to_rgb888()))
+                rgb_png_bytes(image.width, image.height, image.exact))
         _TEXTURE_PNGS[key] = made
     return made
 
@@ -667,6 +676,9 @@ def convert_textures(reader: SourceReader, staging: Staging, world_set: str,
         })
     return {
         "schema": TEXTURE_SCHEMA,
+        # What the PNGs hold: the exact 24-bit decode, which the loader
+        # quantises to the engine's RGB565 unless asked not to.
+        "precision": TEXTURE_PRECISION,
         "world_set": world_set,
         "source": {"lib": reader.rel(lib_path), "din": reader.rel(din_path)},
         "textures": index,

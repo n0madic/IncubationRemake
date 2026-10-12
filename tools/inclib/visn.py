@@ -675,6 +675,11 @@ class VisnImage:
     overrun_words: int
     #: The ``_E3D_init_vision`` pixel format ``pixels`` is packed in.
     pixel_format: int = PIXEL_FORMAT_RGB565
+    #: Packed 24-bit RGB from the same Y, Cb and Cr samples **without** the
+    #: channel tables' quantisation -- :func:`convert_exact`. Present only when
+    #: :func:`decode_record` was asked for it. The remake's own; not part of
+    #: the format.
+    exact: bytes | None = None
 
     def to_rgb888(self) -> bytes:
         """Expand to packed 24-bit RGB by bit replication (our own choice)."""
@@ -698,7 +703,8 @@ def parse_header(data: bytes, offset: int = 0) -> tuple[int, int, int, int]:
 
 
 def decode_record(data: bytes, offset: int = 0, size: int | None = None,
-                  pixel_format: int = PIXEL_FORMAT_RGB565) -> VisnImage:
+                  pixel_format: int = PIXEL_FORMAT_RGB565,
+                  exact: bool = False) -> VisnImage:
     """Decode a single VISN record starting at ``offset``.
 
     ``size`` bounds the record inside a concatenated container; without it the
@@ -708,6 +714,8 @@ def decode_record(data: bytes, offset: int = 0, size: int | None = None,
     ``_E3D_init_vision`` does: :data:`PIXEL_FORMAT_RGB565` (what the game uses)
     or :data:`PIXEL_FORMAT_RGB555`. Only the three channel tables depend on it;
     the transform, the dequantiser and the YCbCr deltas do not.
+
+    ``exact`` also fills :attr:`VisnImage.exact` from the same samples.
     """
     width, height, quality, mode = parse_header(data, offset)
     end = len(data) if size is None else min(len(data), offset + size)
@@ -771,6 +779,7 @@ def decode_record(data: bytes, offset: int = 0, size: int | None = None,
 
     pixels = _convert_colour(plane_y, plane_cb, plane_cr, pixel_format)
     return VisnImage(
+        exact=convert_exact(plane_y, plane_cb, plane_cr) if exact else None,
         width=width,
         height=height,
         quality=quality,
@@ -917,6 +926,64 @@ def _convert_colour(
             | tb[base + db[cb]]
         )
     return out
+
+
+def convert_exact(plane_y: Sequence[int], plane_cb: Sequence[int],
+                  plane_cr: Sequence[int]) -> bytes:
+    """The three planes as packed 24-bit RGB, before the channel tables.
+
+    The same clamp and the same IJG deltas as :func:`_convert_colour`, so every
+    channel index is the one the engine looks up; what differs is only the last
+    step. The engine's table scales the index into a 5- or 6-bit field
+    (``(i * max) // 255``); this keeps all eight bits, ``clamp(i, 0, 255)``.
+    Indices 256..383 saturate in both. Above 383 the engine reads the next
+    table's zero entries and paints **black** -- table adjacency, not a design
+    -- and this saturates instead; no shipped record reaches it
+    (:func:`derive_rgb565` agrees with the tables on all 723, which
+    ``visn_decode.py --check`` pins).
+
+    The remake's own higher-precision reading of the format, not something the
+    game ever computed (docs/50 section 9.1).
+    """
+    dr = DELTA_R_FROM_CR
+    db = DELTA_B_FROM_CB
+    dgcb = DELTA_G_FROM_CB
+    dgcr = DELTA_G_FROM_CR
+    out = bytearray(3 * len(plane_y))
+    at = 0
+    for y, cb, cr in zip(plane_y, plane_cb, plane_cr):
+        y = 0 if y < 0 else (256 if y > 256 else y)
+        cb = 0 if cb < 0 else (256 if cb > 256 else cb)
+        cr = 0 if cr < 0 else (256 if cr > 256 else cr)
+        r = y + dr[cr]
+        g = y + dgcb[cb] + dgcr[cr]
+        b = y + db[cb]
+        out[at] = 0 if r < 0 else (255 if r > 255 else r)
+        out[at + 1] = 0 if g < 0 else (255 if g > 255 else g)
+        out[at + 2] = 0 if b < 0 else (255 if b > 255 else b)
+        at += 3
+    return bytes(out)
+
+
+#: ``(v * 31) // 255`` and ``(v * 63) // 255`` -- the channel tables' own
+#: scaling, applied to an exact 8-bit value.
+RGB565_FROM_8BIT: tuple[tuple[int, ...], tuple[int, ...]] = (
+    tuple((v * 31) // 255 for v in range(256)),
+    tuple((v * 63) // 255 for v in range(256)),
+)
+
+
+def derive_rgb565(rgb: bytes) -> list[int]:
+    """Pack :func:`convert_exact`'s output the way the engine's tables would.
+
+    Equal to the tables' own RGB565 wherever no channel index exceeded 383,
+    because ``table(i) = ((clamp(i, 0, 255) * max) // 255) << shift`` for
+    every ``i`` up to 383. This is what lets the remake's cache carry the exact
+    picture alone and still draw the original's quantised one.
+    """
+    five, six = RGB565_FROM_8BIT
+    return [(five[rgb[i]] << 11) | (six[rgb[i + 1]] << 5) | five[rgb[i + 2]]
+            for i in range(0, len(rgb), 3)]
 
 
 # ---------------------------------------------------------------------------

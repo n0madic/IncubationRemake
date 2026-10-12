@@ -3025,9 +3025,10 @@ clamped, with a single LOD** ([`31` §4.8](31-prototyp-geometry.md), read
 from `guTexAllocateMemory`'s arguments). The remake has drawn texel by
 texel since Slice 1. Three decisions.
 
-**Smoothing is an option, off by default.** `GameSettings.smooth_textures`,
-the *Textures: sharp / smooth* row of the options screen and `option
-textures` on the agent. Off is what was seen; on is bilinear with the
+**Smoothing is an option, off by default.** *(Revised by §7.29: the row is
+now the *Graphics* preset, and `smooth_textures` migrates to its *smooth*.)*
+`GameSettings.smooth_textures`, the *Textures: sharp / smooth* row of the
+options screen and `option textures` on the agent. Off is what was seen; on is bilinear with the
 coordinates clamped and no mipmaps, which is the texture state the Glide
 build asks for. It is presentation only -- no save, no canonical hash -- and
 switching it reaches the scene already on screen (`MeshBuilder.set_smooth`
@@ -3044,8 +3045,11 @@ nobody has checked.
 
 **What smoothing touches, and what it does not.** Every bank-textured
 material: scenery, special objects, bodies, cutscene models. Not the effect
-sprites: their atlas is a grid of small tiles, and a bilinear sample at a
-tile's edge reads the next tile. Not the ground overlay or the map markers,
+sprites -- on a reason that was **wrong** (corrected 2026-10-12): their atlas
+is a grid of small tiles, but `BlobSprites._uv_of` already runs each quad
+from the centre of its first texel to the centre of its last, the
+original's own inclusive span, so a bilinear sample never reaches the next
+tile. Not the ground overlay or the map markers,
 which are interface art. The colour-keyed copies now give every hole the
 mean colour of its opaque neighbours, at alpha 0, whatever the setting --
 invisible texel by texel, where the scissor discards the hole, and what keeps
@@ -3073,6 +3077,53 @@ to its own rectangle or the chain is cut short; they stay behind the
 `INC_GFX=mips` experiment switch, as does `INC_GFX=msaa4` (MSAA 4x, whose
 effect on these scenes measured 0.1--0.2 levels on average -- the jaggedness
 here is texels, not edges). Both switches are marked `TODO:` in the code.
+
+### 7.29 The *Graphics* preset, and the exact 24-bit pages (2026-10-12)
+
+§7.28's row was one switch; the next steps -- the exact colour decode,
+mipmaps, light from the effects, halos, MSAA -- are five more, and the
+options screen has no room for another row (eleven at its longest, ending
+just above *Back*). So the row became a preset, the shape §7.1 gave
+`Faithful`: **Graphics: original / smooth / enhanced**, `GameSettings.graphics`,
+`option graphics N` on the agent. `GraphicsMode` names the switch behind each
+step and every consumer asks the named question:
+
+| Preset | Sampling | Colour | Light, halos, MSAA |
+|---|---|---|---|
+| original *(default)* | nearest | the engine's RGB565 | off |
+| smooth | bilinear, clamped | exact 24-bit | off |
+| enhanced | mipmapped, anisotropic | exact 24-bit | on |
+
+A settings file from §7.28's two-way row carries `smooth_textures: true` over
+as *smooth*. Everything here is presentation: no save, no canonical hash.
+
+**The cache carries the exact picture, and the original's derives from it.**
+[`50` §9.1](50-visn-textures.md): the engine's RGB565 is a function of the
+exact 24-bit decode on all 723 records, pinned by `visn_decode.py --check`.
+So the converter writes the exact pages (`"precision": "rgb888"` in each
+texture index, `CONVERTER_VERSION` 0.47.0) and the loader draws the original
+through one byte table per channel -- the engine's field scaling, bit
+replication back to eight bits, then §7.25's curve -- folded into the pass
+the curve already cost (`MeshBuilder.channel_tables`). Measured, not
+assumed: the *original* preset over the new cache is pixel-identical to the
+old cache's picture on `_C_141` and `_C_154`, cold-started and after a switch
+back. The pages are twice as large as PNGs: 62 MB of textures in the bundled
+cache, where 33 MB were.
+
+**The colour key is decided on the quantised texel.** The engine skips a
+texel whose RGB565 is `0x0000`; an exact texel quantises to it when red and
+blue are at most 8 and green at most 4. Testing the exact bytes for black
+would make those texels solid in the 24-bit picture and holes in the
+original's.
+
+**A switch rewrites the pages in place.** Every page carries its mip chain
+from the load, whatever the preset -- a third more texture memory -- so
+`MeshBuilder.set_graphics` can `update` each `ImageTexture` with the other
+colour depth and the materials already holding it follow;
+`MeshBuilder.set_sampling` moves the materials; the viewport takes the
+preset's MSAA. The headless suites cannot see a rewritten pixel -- that
+renderer keeps a texture's first image -- so `depth.bank_rewrites_the_pixels`
+runs only where a real renderer draws.
 
 ---
 

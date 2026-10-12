@@ -861,8 +861,13 @@ def check_fonts(c: Checker, cache_dir: Path, code_page: str = "cp1252",
 #: music flag.  Measured at 152.7 and 113.5 MiB against 42.6 and 16.5.  The
 #: "music is the growth" check below became "the flag changes exactly the
 #: music" at the same time, because music is no longer most of the difference.
-CACHE_CEILING_KIB_MUSIC = 160 * 1024
-CACHE_CEILING_KIB_SILENT = 120 * 1024
+#:
+#: Raised again on 2026-10-12, when the texture pages became the exact 24-bit
+#: decode (docs/92 7.29): they compress to twice the bytes the RGB565
+#: expansion did, and the original's picture derives from them, so nothing is
+#: carried twice.  Measured at 169.9 and 120.0 MiB against 152.7 and 113.5.
+CACHE_CEILING_KIB_MUSIC = 180 * 1024
+CACHE_CEILING_KIB_SILENT = 130 * 1024
 #: Sprite constructor calls that build a row, column or size in a
 #: register instead of passing a literal (docs/28 7.3).
 SPRITE_COMPUTED_CALLS = 18

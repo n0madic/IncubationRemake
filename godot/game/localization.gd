@@ -151,14 +151,16 @@ const OWN: Dictionary = {
 		"Russian": "исходный"},
 	"shell.font.readable": {"English": "readable",
 		"Russian": "читаемый"},
-	"shell.textures": {"English": "Textures",
-		"Russian": "Текстуры"},
-	# The two answers of [member GameSettings.smooth_textures], sized for the
-	# same field as the font's.
-	"shell.textures.sharp": {"English": "sharp",
-		"Russian": "чёткие"},
-	"shell.textures.smooth": {"English": "smooth",
-		"Russian": "мягкие"},
+	"shell.graphics": {"English": "Graphics",
+		"Russian": "Графика"},
+	# The three [GraphicsMode] presets, sized for the same field as the
+	# font's.
+	"shell.graphics.0": {"English": "original",
+		"Russian": "оригинал"},
+	"shell.graphics.1": {"English": "smooth",
+		"Russian": "мягкая"},
+	"shell.graphics.2": {"English": "enhanced",
+		"Russian": "улучшенная"},
 	"shell.language": {"English": "Language",
 		"Russian": "Язык"},
 	"shell.campaign": {"English": "Campaign %d",

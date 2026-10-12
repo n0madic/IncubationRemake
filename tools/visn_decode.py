@@ -33,6 +33,7 @@ from inclib.visn import (  # noqa: E402
     VisnError,
     VisnImage,
     decode_record,
+    derive_rgb565,
     parse_header,
     read_din_index,
 )
@@ -130,8 +131,14 @@ def cmd_check(containers: list[Container]) -> int:
     record left unread by the bitstream. A Huffman or bitstream desync would
     make the slack drift wildly, so a tight slack across every record is strong
     evidence the entropy layer is being read correctly.
+
+    It also requires that the engine's RGB565 picture **derives** from the exact
+    24-bit one (:func:`derive_rgb565`) on every record: the remake's cache
+    carries only the latter (docs/50 section 9.1), so a record where the two
+    part would be drawn wrong under the original's colour depth.
     """
     ok = 0
+    underived: list[tuple[str, str, int]] = []
     failures: list[tuple[str, str, str]] = []
     slack_hist: dict[int, int] = {}
     overrun_hist: dict[int, int] = {}
@@ -141,11 +148,16 @@ def cmd_check(containers: list[Container]) -> int:
         data, entries = _load(container)
         for entry in entries:
             try:
-                image = decode_record(data, entry.offset, entry.size)
+                image = decode_record(data, entry.offset, entry.size, exact=True)
             except Exception as exc:  # noqa: BLE001 - every failure is reported, never hidden
                 failures.append((container.lib_path, entry.name, f"{type(exc).__name__}: {exc}"))
                 continue
             ok += 1
+            assert image.exact is not None
+            derived = derive_rgb565(image.exact)
+            if derived != image.pixels:
+                differ = sum(1 for a, b in zip(derived, image.pixels) if a != b)
+                underived.append((container.lib_path, entry.name, differ))
             slack = entry.size - image.bytes_read
             slack_hist[slack] = slack_hist.get(slack, 0) + 1
             overrun_hist[image.overrun_words] = overrun_hist.get(image.overrun_words, 0) + 1
@@ -163,9 +175,12 @@ def cmd_check(containers: list[Container]) -> int:
     print("overrun words: " + ", ".join(
         f"{k}->{v}" for k, v in sorted(overrun_hist.items())
     ))
+    print(f"RGB565 derived from the exact RGB888: {ok - len(underived)}/{ok}")
     for lib, name, err in failures:
         print(f"FAIL {lib} :: {name} :: {err}")
-    return 1 if failures else 0
+    for lib, name, differ in underived:
+        print(f"FAIL {lib} :: {name} :: {differ} pixels do not derive")
+    return 1 if failures or underived or ok == 0 else 0
 
 
 def cmd_decode(containers: list[Container], out_dir: str) -> int:

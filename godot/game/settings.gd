@@ -23,7 +23,7 @@ extends RefCounted
 ## | gore level | [member World.gore_level] |
 ## | `Faithful` | [constant AudioEvents.COMPAT_FLAGS] and [constant GAMEPLAY_CORRECTION_FLAGS] |
 ## | the interface font | every [Label] and [Button] the game draws |
-## | texture smoothing | every bank texture, [method MeshBuilder.apply_sampling] |
+## | the graphics preset | [GraphicsMode]'s switches: sampling, colour depth, effect light, halos, MSAA |
 ##
 ## **Difficulty is the default for a new campaign, not the live value.** The
 ## authority is [member CampaignState.difficulty] -- section 7.15's S6 -- and
@@ -95,16 +95,15 @@ var faithful: bool = true
 ## the remake trades fidelity for comfort by default -- this one does, because
 ## the alternative is text the player cannot read.
 var game_font: bool = false
-## Whether the 3D textures are sampled smoothed instead of texel by texel --
-## docs/92 section 7.28.
+## The [GraphicsMode] preset -- docs/92 sections 7.28 and 7.29.
 ##
-## **Off by default, because texel by texel is what was seen.** The software
-## renderer samples the nearest texel; the accelerated build handed Glide a
-## bilinear, clamped, mipmap-free texture state (docs/31 section 4.8), but no
-## frame of that build has been observed, so the option is the remake's own
-## and is not named after it. Presentation only: nothing it touches enters a
-## save or the canonical hash.
-var smooth_textures: bool = false
+## **The original by default, because that is what was seen.** The software
+## renderer samples the nearest texel of an RGB565 page; everything past that
+## -- the accelerated build's bilinear state (docs/31 section 4.8), the exact
+## 24-bit decode, the effect light -- is the remake's own and is not named
+## after anything it did not observe. Presentation only: nothing it touches
+## enters a save or the canonical hash.
+var graphics: int = GraphicsMode.DEFAULT
 ## Whether `aGameIntro`'s title plate has already been sat through once.
 ##
 ## The original waits for a key or a click on *Start Game* on **every** launch
@@ -169,9 +168,12 @@ func load_from_disk() -> bool:
 	faithful = DictRead.as_bool(document.get("faithful", faithful))
 	game_font = DictRead.as_bool(document.get("game_font", game_font))
 	# No schema bump, on the `speech_volume` precedent: a file from before the
-	# row reads as the default.
-	smooth_textures = DictRead.as_bool(document.get("smooth_textures",
-		smooth_textures))
+	# row reads as the default, and one from the two-way texture row keeps
+	# what it chose.
+	var legacy: int = GraphicsMode.SMOOTH \
+		if DictRead.as_bool(document.get("smooth_textures", false)) else graphics
+	graphics = GraphicsMode.clamped(DictRead.as_int(document.get("graphics",
+		legacy)))
 	seen_splash = DictRead.as_bool(document.get("seen_splash", seen_splash))
 	var mode: int = DictRead.as_int(document.get("control_mode", ControlMode.AUTO))
 	control_mode = mode as ControlMode if mode >= ControlMode.AUTO \
@@ -202,7 +204,7 @@ func view() -> Dictionary:
 		"gore_level": gore_level,
 		"faithful": faithful,
 		"game_font": game_font,
-		"smooth_textures": smooth_textures,
+		"graphics": graphics,
 		"seen_splash": seen_splash,
 		"control_mode": int(control_mode),
 		"language": language,

@@ -241,11 +241,22 @@ func _check_draw_kinds(h: TestHarness) -> void:
 func _check_colour_key(h: TestHarness) -> void:
 	var image: Image = Image.create_empty(2, 1, false, Image.FORMAT_RGB8)
 	image.set_pixel(0, 0, Color8(0, 0, 0))
-	image.set_pixel(1, 0, Color8(0, 0, 8))
+	image.set_pixel(1, 0, Color8(0, 0, 9))
 	var keyed: Image = MeshBuilder.colour_key(image)
 	h.equal("key.black_is_a_hole", keyed.get_pixel(0, 0).a, 0.0)
 	h.equal("key.near_black_is_opaque", keyed.get_pixel(1, 0).a, 1.0,
 		"the key is RGB565 0x0000 exactly, not a darkness threshold")
+	# The cache holds the exact 24-bit page, and the engine keys on the
+	# quantised texel: (8, 4, 8) is RGB565 0x0000, so it is a hole in either
+	# colour depth -- solid in one and a hole in the other was the bug.
+	var quantised_zero: Image = Image.create_empty(2, 1, false,
+		Image.FORMAT_RGB8)
+	quantised_zero.set_pixel(0, 0, Color8(8, 4, 8))
+	quantised_zero.set_pixel(1, 0, Color8(8, 5, 8))
+	var keyed_zero: Image = MeshBuilder.colour_key(quantised_zero)
+	h.equal("key.decided_on_the_quantised_texel",
+		[keyed_zero.get_pixel(0, 0).a8, keyed_zero.get_pixel(1, 0).a8], [0, 255],
+		"(4 * 63) // 255 is 0 and (5 * 63) // 255 is 1")
 	# A hole takes the mean of its opaque neighbours, so a smoothed sample at
 	# its edge does not pull black in; a hole with none stays black.
 	var grille: Image = Image.create_empty(3, 1, false, Image.FORMAT_RGB8)
@@ -279,8 +290,9 @@ func _check_colour_key(h: TestHarness) -> void:
 		ProjectSettings.globalize_path(path))
 
 
-## docs/92 section 7.28: texel by texel unless the bank says smooth, and the
-## switch reaches a material already in a tree without touching any other.
+## docs/92 sections 7.28 and 7.29: texel by texel unless the bank's preset says
+## otherwise, and the switch reaches a material already in a tree without
+## touching any other.
 func _check_sampling(h: TestHarness) -> void:
 	var page: ImageTexture = ImageTexture.create_from_image(
 		Image.create_empty(2, 2, false, Image.FORMAT_RGB8))
@@ -293,7 +305,7 @@ func _check_sampling(h: TestHarness) -> void:
 		[BaseMaterial3D.TEXTURE_FILTER_NEAREST, true],
 		"the software renderer's nearest texel, wrapping mod 256")
 	var smooth_bank: Dictionary = sharp_bank.duplicate()
-	smooth_bank[MeshBuilder.SMOOTH] = true
+	smooth_bank[MeshBuilder.SAMPLING] = GraphicsMode.SAMPLING_LINEAR
 	var smooth: StandardMaterial3D = MeshBuilder.material_for(
 		MeshBuilder.KIND_TEXTURE_MASKED, 0, smooth_bank)
 	h.equal("sampling.smooth_is_bilinear_and_clamped",
@@ -317,15 +329,88 @@ func _check_sampling(h: TestHarness) -> void:
 	built.mesh = mesh
 	root.add_child(built)
 	h.equal("sampling.switch_reaches_only_bank_materials",
-		[MeshBuilder.set_smooth(root, true), sharp.texture_filter,
+		[MeshBuilder.set_sampling(root, GraphicsMode.SAMPLING_LINEAR),
+		sharp.texture_filter,
 		foreign.texture_filter],
 		[1, BaseMaterial3D.TEXTURE_FILTER_LINEAR,
 		BaseMaterial3D.TEXTURE_FILTER_NEAREST],
 		"the overlay, the markers and the sprites keep their own sampling")
-	var _back: int = MeshBuilder.set_smooth(root, false)
+	var _back: int = MeshBuilder.set_sampling(root,
+		GraphicsMode.SAMPLING_NEAREST)
 	h.equal("sampling.switch_back", sharp.texture_filter,
 		BaseMaterial3D.TEXTURE_FILTER_NEAREST)
 	root.free()
+
+	# The presets, as the named questions every consumer asks.
+	h.equal("graphics.presets",
+		[GraphicsMode.sampling(GraphicsMode.ORIGINAL),
+		GraphicsMode.exact_colour(GraphicsMode.ORIGINAL),
+		GraphicsMode.sampling(GraphicsMode.SMOOTH),
+		GraphicsMode.exact_colour(GraphicsMode.SMOOTH),
+		GraphicsMode.effect_lights(GraphicsMode.SMOOTH),
+		GraphicsMode.sampling(GraphicsMode.ENHANCED),
+		GraphicsMode.effect_lights(GraphicsMode.ENHANCED)],
+		[GraphicsMode.SAMPLING_NEAREST, false, GraphicsMode.SAMPLING_LINEAR,
+		true, false, GraphicsMode.SAMPLING_MIPMAPPED, true])
+	_check_colour_depth(h)
+
+
+## docs/92 section 7.29: the cache's page is the exact 24-bit decode, and the
+## original's RGB565 picture is one table away.
+func _check_colour_depth(h: TestHarness) -> void:
+	var quantised: Array[PackedByteArray] = MeshBuilder.channel_tables(
+		PackedByteArray(), true)
+	# Red/blue: (128 * 31) // 255 = 15, replicated (15 << 3) | (15 >> 2) = 123;
+	# green: (128 * 63) // 255 = 31, (31 << 2) | (31 >> 4) = 125. The ends stay.
+	h.equal("depth.quantised_tables",
+		[quantised[0][128], quantised[1][128], quantised[2][128],
+		quantised[0][0], quantised[1][255], quantised[0][8], quantised[0][9]],
+		[123, 125, 123, 0, 255, 0, 8],
+		"the engine's field scaling, then bit replication as the old cache had")
+	var exact: Array[PackedByteArray] = MeshBuilder.channel_tables(
+		PackedByteArray(), false)
+	h.equal("depth.exact_is_identity", [exact[0][37], exact[1][200]], [37, 200])
+
+	# A bank switched between the two rewrites its pages in place, so a
+	# material that already holds one follows.
+	var path: String = "user://test_mesh_depth.png"
+	var page: Image = Image.create_empty(2, 1, false, Image.FORMAT_RGB8)
+	page.set_pixel(0, 0, Color8(128, 128, 128))
+	page.set_pixel(1, 0, Color8(3, 2, 3))
+	h.equal("depth.fixture_written", page.save_png(path), OK)
+	var index: Dictionary = {"precision": MeshBuilder.PRECISION_EXACT,
+		"textures": [{"id": 0, "name": "probe", "file": "depth.png"}]}
+	var dir: String = "user://test_mesh_depth_cache"
+	var _made: Error = DirAccess.make_dir_recursive_absolute(
+		ProjectSettings.globalize_path(dir + "/textures/T00"))
+	var _copied: Error = DirAccess.copy_absolute(
+		ProjectSettings.globalize_path(path),
+		ProjectSettings.globalize_path(dir + "/textures/T00/depth.png"))
+	var bank: Dictionary = MeshBuilder.load_textures(dir, "T00", index,
+		GraphicsMode.ORIGINAL)
+	var held: Texture2D = MeshBuilder.plain_texture(bank, 0)
+	var before: int = held.get_image().get_pixel(0, 0).r8 if held != null else -1
+	var rewritten: int = MeshBuilder.set_graphics(bank, GraphicsMode.SMOOTH)
+	var after: int = held.get_image().get_pixel(0, 0).r8 if held != null else -1
+	var curve: PackedByteArray = DictRead.as_dict(bank).get(MeshBuilder.CURVE,
+		PackedByteArray())
+	var expect_exact: int = curve[128] if not curve.is_empty() else 128
+	var expect_quantised: int = curve[123] if not curve.is_empty() else 123
+	h.equal("depth.bank_switches_in_place",
+		[before, rewritten, MeshBuilder.plain_texture(bank, 0) == held],
+		[expect_quantised, 1, true],
+		"the same texture object, rewritten from the exact page")
+	# The headless run's renderer keeps a texture's first image whatever
+	# `update` hands it, so the rewritten pixels are only observable where a
+	# real one draws -- the windowed and exported runs.
+	if DisplayServer.get_name() != "headless":
+		h.equal("depth.bank_rewrites_the_pixels", after, expect_exact)
+	h.equal("depth.same_preset_rewrites_nothing",
+		MeshBuilder.set_graphics(bank, GraphicsMode.ENHANCED), 0,
+		"smooth and enhanced share the colour depth")
+	for gone: String in [path, dir + "/textures/T00/depth.png"]:
+		var _removed: Error = DirAccess.remove_absolute(
+			ProjectSettings.globalize_path(gone))
 
 
 ## Which kinds the slice's own geometry contains.  Pinned so that a kind

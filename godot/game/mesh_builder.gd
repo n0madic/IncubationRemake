@@ -102,9 +102,19 @@ const BY_NAME: String = "by_name"
 ## the renderer draws a byte as it is.  The bank's textures already carry it;
 ## a flat face's colour goes through it in [method _surface].
 const CURVE: String = "curve"
-## Whether the bank's textures are sampled smoothed rather than texel by texel
-## -- [member GameSettings.smooth_textures]. Absent means not.
-const SMOOTH: String = "smooth"
+## The bank's [GraphicsMode] sampling, which [method material_for] reads.
+## Absent means nearest.
+const SAMPLING: String = "sampling"
+## Whether the cache's pages are the exact 24-bit decode (`"precision":
+## "rgb888"` in the texture index, docs/92 section 7.29) ...
+const EXACT: String = "exact"
+## ... and whether this bank draws them quantised to the engine's RGB565.
+const QUANTISED: String = "quantised"
+const PRECISION_EXACT: String = "rgb888"
+## The largest byte that quantises to field value 0: `(8 * 31) // 255` and
+## `(4 * 63) // 255` are 0, `(9 * 31) // 255` and `(5 * 63) // 255` are 1.
+const KEY_LIMIT_5: int = 8
+const KEY_LIMIT_6: int = 4
 ## The meta every material [method material_for] gives a texture carries, so
 ## [method set_smooth] can find them among everything else a tree holds.
 const SMOOTHABLE_META: StringName = &"mesh_builder_texture"
@@ -495,7 +505,8 @@ static func material_for(kind: int, texture: int,
 		textures: Dictionary) -> StandardMaterial3D:
 	var material: StandardMaterial3D = StandardMaterial3D.new()
 	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	apply_sampling(material, DictRead.as_bool(textures.get(SMOOTH, false)))
+	apply_sampling(material, DictRead.as_int(textures.get(SAMPLING,
+		GraphicsMode.SAMPLING_NEAREST)))
 	# **One-sided, the way the engine draws them.** docs/31 section 4.2: every
 	# face names a plane, and the leaf walker (`Eng3d.dll` `0x405203`..
 	# `0x405230`) draws it only when `plane_value - plane_d < 0`. `plane_value`
@@ -563,39 +574,37 @@ static func material_for(kind: int, texture: int,
 	return material
 
 
-## How a bank texture is sampled: texel by texel, as both shipped renderers do
-## by default, or smoothed -- [member GameSettings.smooth_textures].
+## How a material reads its bank texture -- [constant GraphicsMode.SAMPLING_NEAREST]
+## and the rest, docs/92 section 7.29.
 ##
-## **Smoothed is bilinear with the coordinates clamped and no mipmaps**, which
-## is the texture state `ENG3DFX.DLL` hands Glide (docs/31 section 4.8). It is
-## offered as the remake's own option and not as the accelerated build's
-## picture: that build's frame has never been observed (docs/92 section 7.28).
-## Clamping changes nothing a face can reach -- every shipped `(u, v)` lies
-## inside its page -- and keeps a filtered edge from reaching across to the
-## opposite one.
-static func apply_sampling(material: BaseMaterial3D, smooth: bool) -> void:
-	if not smooth:
-		material.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
-		material.texture_repeat = true
-		return
-	material.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR
-	# TODO: graphics experiment (INC_GFX=mips) -- the pages are atlases, so a
-	# full mip chain bleeds neighbouring tiles into each other at a distance
-	# (docs/92 section 7.28); not a setting until that is solved.
-	if gfx("mips"):
-		material.texture_filter = \
-			BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS_ANISOTROPIC
-	material.texture_repeat = false
+## **Nearest** is what both shipped renderers do by default, wrapping mod 256.
+## **Linear** is bilinear with the coordinates clamped and no mipmaps, the
+## texture state `ENG3DFX.DLL` hands Glide (docs/31 section 4.8) -- the
+## remake's own option, not the accelerated build's picture, which has never
+## been observed. Clamping changes nothing a face can reach: every shipped
+## `(u, v)` lies inside its page.
+static func apply_sampling(material: BaseMaterial3D, sampling: int) -> void:
+	match sampling:
+		GraphicsMode.SAMPLING_LINEAR:
+			material.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR
+			material.texture_repeat = false
+		GraphicsMode.SAMPLING_MIPMAPPED:
+			material.texture_filter = \
+				BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS_ANISOTROPIC
+			material.texture_repeat = false
+		_:
+			material.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
+			material.texture_repeat = true
 
 
-## Switch every bank-textured material under `root` to `smooth` sampling.
+## Switch every bank-textured material under `root` to `sampling`.
 ##
 ## The materials are built once per scene, so a change made on the options
 ## screen has to reach the ones already on screen; the banks' own [constant
-## SMOOTH] flag decides the ones built afterwards. Only materials [method
+## SAMPLING] decides the ones built afterwards. Only materials [method
 ## material_for] gave a texture are touched -- the overlay, the markers and
 ## the effect sprites keep their own sampling. Returns how many changed.
-static func set_smooth(root: Node, smooth: bool) -> int:
+static func set_sampling(root: Node, sampling: int) -> int:
 	var changed: int = 0
 	if root == null:
 		return changed
@@ -611,22 +620,21 @@ static func set_smooth(root: Node, smooth: bool) -> int:
 				instance.mesh.surface_get_material(surface) as BaseMaterial3D
 			if material == null or not material.has_meta(SMOOTHABLE_META):
 				continue
-			apply_sampling(material, smooth)
+			apply_sampling(material, sampling)
 			changed += 1
 	return changed
 
 
-## Loads every PNG the cache's texture index names, keyed by its id, plus a
-## colour-keyed copy of each for draw kind `0x14`.
+## Loads every PNG the cache's texture index names, keyed by its id; the
+## colour-keyed copy draw kind `0x14` reads is made on first use ([method
+## keyed_texture]).
 ##
-## The keyed copies are built for every texture rather than only for the ids a
-## masked face actually names: the whole set is ten images on the slice's lead
-## mission, and deciding needs the geometry, which this does not have.
-##
-## *smooth* is the bank's [constant SMOOTH] flag, which [method material_for]
-## reads.
+## *preset* is a [GraphicsMode] preset: it decides the bank's [constant
+## SAMPLING], which [method material_for] reads, and whether the exact 24-bit
+## pages are drawn as they are or quantised to the engine's RGB565 ([method
+## channel_tables]).
 static func load_textures(cache_dir: String, world_set: String,
-		index: Dictionary, smooth: bool = false) -> Dictionary:
+		index: Dictionary, preset: int = GraphicsMode.DEFAULT) -> Dictionary:
 	var plain: Dictionary = {}
 	var sources: Dictionary = {}
 	var by_name: Dictionary = {}
@@ -635,6 +643,10 @@ static func load_textures(cache_dir: String, world_set: String,
 	# the palette byte the texel holds (docs/92 section 7.25).
 	var curve: PackedByteArray = PaletteCurve.table() \
 		if PaletteCurve.is_active() else PackedByteArray()
+	var exact: bool = DictRead.as_string(index.get("precision", "")) \
+		== PRECISION_EXACT
+	var quantise: bool = exact and not GraphicsMode.exact_colour(preset)
+	var tables: Array[PackedByteArray] = channel_tables(curve, quantise)
 	var entries: Array = DictRead.as_array(index.get("textures", []))
 	for entry: Variant in entries:
 		var record: Dictionary = DictRead.as_dict(entry)
@@ -644,20 +656,44 @@ static func load_textures(cache_dir: String, world_set: String,
 		# is under `res://`, which the development fixtures are.  Reading the
 		# bytes and decoding them works the same way for `res://` and for the
 		# `user://` cache production actually uses.
-		if not FileAccess.file_exists(path):
-			continue
-		var image: Image = Image.new()
-		var loaded: Error = image.load_png_from_buffer(
-			FileAccess.get_file_as_bytes(path))
-		if loaded != OK:
+		var raw: Image = _read_png(path)
+		if raw == null:
 			continue
 		var id: int = DictRead.as_int(record["id"])
-		image = _prepared(image, curve)
-		plain[id] = ImageTexture.create_from_image(image)
+		plain[id] = ImageTexture.create_from_image(_drawn(raw, tables))
 		sources[id] = path
 		by_name[DictRead.as_string(record["name"])] = id
 	return {PLAIN: plain, KEYED: {}, SOURCES: sources, BY_NAME: by_name,
-		CURVE: curve, SMOOTH: smooth}
+		CURVE: curve, SAMPLING: GraphicsMode.sampling(preset), EXACT: exact,
+		QUANTISED: quantise}
+
+
+## Move a loaded bank to `preset`: its [constant SAMPLING] for what is built
+## next, and -- when the colour depth changes -- every page it has made,
+## rewritten in place so the materials already holding them follow. Returns
+## how many pages were rewritten.
+static func set_graphics(textures: Dictionary, preset: int) -> int:
+	textures[SAMPLING] = GraphicsMode.sampling(preset)
+	var quantise: bool = DictRead.as_bool(textures.get(EXACT, false)) \
+		and not GraphicsMode.exact_colour(preset)
+	if quantise == DictRead.as_bool(textures.get(QUANTISED, false)):
+		return 0
+	textures[QUANTISED] = quantise
+	var curve: PackedByteArray = textures.get(CURVE, PackedByteArray())
+	var tables: Array[PackedByteArray] = channel_tables(curve, quantise)
+	var sources: Dictionary = DictRead.as_dict(textures.get(SOURCES, {}))
+	var rewritten: int = 0
+	for kind: String in [PLAIN, KEYED]:
+		var made: Dictionary = DictRead.as_dict(textures.get(kind, {}))
+		for id: Variant in made.keys():
+			var page: ImageTexture = made[id]
+			var raw: Image = _read_png(DictRead.as_string(sources.get(id, "")))
+			if page == null or raw == null:
+				continue
+			page.update(colour_key(raw, tables) if kind == KEYED
+				else _drawn(raw, tables))
+			rewritten += 1
+	return rewritten
 
 
 ## The bank's texture `id`, or null.
@@ -671,7 +707,7 @@ static func plain_texture(textures: Dictionary, id: int) -> Texture2D:
 ## kept in the bank, or null.
 ##
 ## **Lazily, because [method colour_key] is the expensive half of a bank** and
-## only the draw kind `0x14` reads it -- 2 673 faces of 236 861, a handful of
+## only the draw kind `0x14` reads it -- 2 673 faces of 236 861, one to eight
 ## pages per world set. Building it for every page cost a quarter of a second
 ## per world set before the hole fill, and four times that after it.
 static func keyed_texture(textures: Dictionary, id: int) -> Texture2D:
@@ -684,83 +720,121 @@ static func keyed_texture(textures: Dictionary, id: int) -> Texture2D:
 	var sources: Dictionary = DictRead.as_dict(textures.get(SOURCES, {}))
 	if not sources.has(id):
 		return null
-	var image: Image = Image.new()
-	if image.load_png_from_buffer(FileAccess.get_file_as_bytes(
-			DictRead.as_string(sources[id]))) != OK:
+	var raw: Image = _read_png(DictRead.as_string(sources[id]))
+	if raw == null:
 		return null
 	var curve: PackedByteArray = textures.get(CURVE, PackedByteArray())
-	var keyed: Image = colour_key(_prepared(image, curve, false))
-	_experimental_mipmaps(keyed)
-	var made: ImageTexture = ImageTexture.create_from_image(keyed)
+	var made: ImageTexture = ImageTexture.create_from_image(colour_key(raw,
+		channel_tables(curve, DictRead.as_bool(textures.get(QUANTISED, false)))))
 	bank[id] = made
 	return made
 
 
-## The decoded page as the renderer is to draw it: through the curve and, on
-## the experiment switch, with mipmaps.
-static func _prepared(image: Image, curve: PackedByteArray,
-		mipmaps: bool = true) -> Image:
-	var out: Image = image
-	if not curve.is_empty():
-		# Before any key: the table maps black to black, so the hole a masked
-		# face reads is the same texel it was.
-		out = PaletteCurve.remap(out, curve)
-	if mipmaps:
-		_experimental_mipmaps(out)
+## One byte table per channel, red, green and blue, from the PNG's byte to the
+## byte to draw.
+##
+## *quantise* puts each channel through the engine's own field scaling first,
+## `(v * 31) // 255` or `(v * 63) // 255`, and expands it back by bit
+## replication -- which reproduces the RGB565 picture **bit for bit** from the
+## exact 24-bit one (`visn_decode.py --check` pins the derivation on all 723
+## records, docs/50 section 9.1). Then [PaletteCurve]'s table, when the
+## renderer needs one. Both are folded into one lookup, so the original look
+## costs no pass the exact one does not.
+static func channel_tables(curve: PackedByteArray,
+		quantise: bool) -> Array[PackedByteArray]:
+	var out: Array[PackedByteArray] = []
+	for bits: int in [5, 6, 5]:
+		var table: PackedByteArray = PackedByteArray()
+		table.resize(PaletteCurve.LEVELS)
+		var top: int = (1 << bits) - 1
+		for v: int in range(PaletteCurve.LEVELS):
+			var drawn: int = v
+			if quantise:
+				var field: int = (v * top) / 255
+				drawn = ((field << (8 - bits)) & 0xFF) | (field >> (2 * bits - 8))
+			table[v] = curve[drawn] if not curve.is_empty() else drawn
+		out.append(table)
 	return out
 
 
-## TODO: graphics experiment (INC_GFX=mips), see [method apply_sampling].
-static func _experimental_mipmaps(image: Image) -> void:
-	if gfx("mips"):
-		var _made: Error = image.generate_mipmaps()
+## Whether every table is the identity, so a page can be drawn as read.
+static func _identity(tables: Array[PackedByteArray]) -> bool:
+	for table: PackedByteArray in tables:
+		for v: int in range(table.size()):
+			if table[v] != v:
+				return false
+	return true
 
 
-## TODO: graphics experiment -- whether `flag` is in the comma-separated
-## `INC_GFX` environment variable (`mips`, `msaa4`); see docs/92 section 7.28.
-static func gfx(flag: String) -> bool:
-	return OS.get_environment("INC_GFX").split(",").has(flag)
-
-
-## A copy of `image` with alpha 0 wherever the texel is exactly black.
+## The page as the renderer draws it: through `tables`, with its mip chain.
 ##
-## RGB565 `0x0000` is the engine's key and expands to `(0, 0, 0)`, so the test
-## is exact rather than a threshold: a dark-but-not-black texel is opaque in
-## the original and stays opaque here.
+## **The chain is always built**, whatever the sampling: it costs a third more
+## texture memory and lets [method set_graphics] rewrite a page in place --
+## `ImageTexture.update` refuses an image whose mipmap flag differs.
+static func _drawn(raw: Image, tables: Array[PackedByteArray]) -> Image:
+	var out: Image = raw if _identity(tables) \
+		else PaletteCurve.remap_channels(raw, tables)
+	var _chain: Error = out.generate_mipmaps()
+	return out
+
+
+static func _read_png(path: String) -> Image:
+	if path == "" or not FileAccess.file_exists(path):
+		return null
+	var image: Image = Image.new()
+	if image.load_png_from_buffer(FileAccess.get_file_as_bytes(path)) != OK:
+		return null
+	if image.get_format() != Image.FORMAT_RGB8:
+		image.convert(Image.FORMAT_RGB8)
+	return image
+
+
+## `raw` -- the cache's exact 24-bit page -- with alpha 0 where the engine's
+## RGB565 texel is `0x0000`, drawn through `tables`, with its mip chain.
 ##
-## **A hole keeps the mean colour of its opaque 8-neighbours**, at alpha 0.
-## Sampled texel by texel the colour of a hole is never seen -- the scissor
-## discards it -- but a smoothed sample at a hole's edge mixes it in, and
-## black there drew a dark fringe round every grille. Doing it for every bank
-## lets [method set_smooth] switch a scene that is already built.
-static func colour_key(image: Image) -> Image:
-	var source: Image = image
+## **The key is decided on the quantised value, whatever is drawn.** The
+## engine skips a texel whose RGB565 is zero, and a 24-bit texel quantises to
+## zero when red and blue are at most 8 and green at most 4 (`(v * 31) // 255`
+## and `(v * 63) // 255`). Testing the exact bytes for black would make those
+## near-black texels solid in the 24-bit picture and holes in the original.
+##
+## **A hole keeps the mean drawn colour of its opaque 8-neighbours**, at alpha
+## 0. Sampled texel by texel the colour of a hole is never seen -- the scissor
+## discards it -- but a filtered sample at a hole's edge mixes it in, and
+## black there drew a dark fringe round every grille.
+static func colour_key(raw: Image, tables: Array[PackedByteArray] = []) -> Image:
+	var source: Image = raw
 	if source.get_format() != Image.FORMAT_RGB8:
-		source = image.duplicate()
+		source = raw.duplicate()
 		source.convert(Image.FORMAT_RGB8)
+	if tables.is_empty():
+		tables = channel_tables(PackedByteArray(), false)
+	var red_of: PackedByteArray = tables[0]
+	var green_of: PackedByteArray = tables[1]
+	var blue_of: PackedByteArray = tables[2]
 	var width: int = source.get_width()
 	var height: int = source.get_height()
 	var rgb: PackedByteArray = source.get_data()
 	# One pass for the key, so a hole's neighbours are tested by index rather
-	# than by reading pixels back: most holes are interior and never reach
-	# the colour sum, which kept this within the old cost.
+	# than by reading pixels back.
 	var hole: PackedByteArray = PackedByteArray()
 	hole.resize(width * height)
 	for at: int in range(width * height):
 		var byte: int = at * 3
-		hole[at] = 1 if rgb[byte] == 0 and rgb[byte + 1] == 0 \
-			and rgb[byte + 2] == 0 else 0
+		hole[at] = 1 if rgb[byte] <= KEY_LIMIT_5 \
+			and rgb[byte + 1] <= KEY_LIMIT_6 \
+			and rgb[byte + 2] <= KEY_LIMIT_5 else 0
 	var rgba: PackedByteArray = PackedByteArray()
 	rgba.resize(width * height * 4)
 	for y: int in range(height):
 		for x: int in range(width):
 			var at: int = y * width + x
 			var to: int = at * 4
-			var from: int = at * 3
 			if hole[at] == 0:
-				rgba[to] = rgb[from]
-				rgba[to + 1] = rgb[from + 1]
-				rgba[to + 2] = rgb[from + 2]
+				var from: int = at * 3
+				rgba[to] = red_of[rgb[from]]
+				rgba[to + 1] = green_of[rgb[from + 1]]
+				rgba[to + 2] = blue_of[rgb[from + 2]]
 				rgba[to + 3] = 255
 				continue
 			var red: int = 0
@@ -772,9 +846,9 @@ static func colour_key(image: Image) -> Image:
 					var near: int = ny * width + nx
 					if hole[near] != 0:
 						continue
-					red += rgb[near * 3]
-					green += rgb[near * 3 + 1]
-					blue += rgb[near * 3 + 2]
+					red += red_of[rgb[near * 3]]
+					green += green_of[rgb[near * 3 + 1]]
+					blue += blue_of[rgb[near * 3 + 2]]
 					count += 1
 			if count > 0:
 				rgba[to] = roundi(float(red) / float(count))
@@ -782,5 +856,7 @@ static func colour_key(image: Image) -> Image:
 				rgba[to + 2] = roundi(float(blue) / float(count))
 			# The alpha stays 0 and a hole with no opaque neighbour stays
 			# black: `resize` zero-fills.
-	return Image.create_from_data(width, height, false, Image.FORMAT_RGBA8,
-		rgba)
+	var out: Image = Image.create_from_data(width, height, false,
+		Image.FORMAT_RGBA8, rgba)
+	var _chain: Error = out.generate_mipmaps()
+	return out

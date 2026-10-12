@@ -87,6 +87,13 @@ static func table() -> PackedByteArray:
 ## A copy of `image` with every colour byte put through `curve`; alpha is
 ## left alone.  An image in any other format is converted to RGBA8 first.
 static func remap(image: Image, curve: PackedByteArray) -> Image:
+	return remap_channels(image, [curve, curve, curve])
+
+
+## [method remap] with a table of its own for each of red, green and blue --
+## the shape [method MeshBuilder.channel_tables] needs, where the green field
+## of RGB565 is six bits and the other two are five.
+static func remap_channels(image: Image, tables: Array[PackedByteArray]) -> Image:
 	var source: Image = image
 	var format: int = image.get_format()
 	if format != Image.FORMAT_RGB8 and format != Image.FORMAT_RGBA8:
@@ -94,13 +101,16 @@ static func remap(image: Image, curve: PackedByteArray) -> Image:
 		source.convert(Image.FORMAT_RGBA8)
 		format = Image.FORMAT_RGBA8
 	var stride: int = 4 if format == Image.FORMAT_RGBA8 else 3
+	var red: PackedByteArray = tables[0]
+	var green: PackedByteArray = tables[1]
+	var blue: PackedByteArray = tables[2]
 	var data: PackedByteArray = source.get_data()
 	var count: int = data.size()
 	var i: int = 0
 	while i < count:
-		data[i] = curve[data[i]]
-		data[i + 1] = curve[data[i + 1]]
-		data[i + 2] = curve[data[i + 2]]
+		data[i] = red[data[i]]
+		data[i + 1] = green[data[i + 1]]
+		data[i + 2] = blue[data[i + 2]]
 		i += stride
 	return Image.create_from_data(source.get_width(), source.get_height(),
 		false, format, data)

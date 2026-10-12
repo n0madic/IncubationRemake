@@ -650,6 +650,25 @@ with `_E3D_init_vision(0x565)`.
 `_E3D_convert_picblock_from_64kcolor_to_32kcolor` converts RGB565 → RGB555 for
 15-bit displays; it is **[PRIOR ART]**, still not exercised or implemented here.
 
+### 9.1 The exact 24-bit picture, and why RGB565 derives from it — **[CONFIRMED]** *(2026-10-12)*
+
+The tables are where precision is lost: every channel index `i` (the clamped
+`Y` plus its delta) is scaled to a 5- or 6-bit field, `(i * max) // 255`.
+`convert_exact()` in `tools/inclib/visn.py` stops one step earlier and keeps
+`clamp(i, 0, 255)` -- the remake's own reading, not something the game ever
+computed. Over all 723 records (47 382 528 pixels) it holds **11 946**
+distinct colours per page on average against the tables' **1 868**, and
+differs from the bit-replicated RGB565 by 2.6 levels per channel on average,
+8 at most; the gain is in the dark gradients the 5-bit red and blue band.
+
+Because `table(i) = ((clamp(i, 0, 255) * max) // 255) << shift` for every
+`i` up to 383, the engine's RGB565 is **a function of the exact picture**
+wherever no index passes 383 -- the one place the tables' adjacency paints
+black instead of saturating. No shipped record reaches it.
+`visn_decode.py --check` pins the derivation (`derive_rgb565()`) on
+**723/723** records, so a cache can carry only the exact picture and still
+draw the original's quantised one bit for bit (docs/92 section 7.29).
+
 ---
 
 ## 10. Verification performed here
