@@ -30,10 +30,13 @@ extends MeshInstance3D
 const TILE: int = 32
 const GRID: int = 8
 const ATLAS_SIZE: int = 256
-## `quad half-extent = size * 160` world units, and 1600 units is a metre, so a
-## `size` of 10 is a one-metre half-extent -- the ten shipped values run 3 to
-## 40, which is 0.3 m to 4 m.
-const HALF_EXTENT_SCALE: float = 160.0
+## The host passes `size * 160` world units as the quad's **side**, and Eng3d
+## halves it before laying it either side of the centre (docs/28 section 7.3),
+## so the half-extent is `size * 80`: 1600 units is a metre, a `size` of 10 is
+## half a metre either side, and the ten shipped values run 3 to 40 -- 0.15 m
+## to 2 m. It was 160 here until 2026-10-12, which drew every sprite twice its
+## size.
+const HALF_EXTENT_SCALE: float = 80.0
 
 var _tile: int = TILE
 var _grid: int = GRID
@@ -114,7 +117,7 @@ func drawn() -> int:
 ## `basis` is the camera's, and the quad is built from its right and up
 ## vectors: that is what "camera-facing" means, and doing it here rather than
 ## with a billboard flag keeps the quad's own extent in world units where the
-## `size * 160` rule can be applied literally.
+## `size * 80` rule can be applied literally.
 func rebuild(blobs: Array[Blob], basis: Basis) -> int:
 	_drawn = 0
 	if _immediate == null:

@@ -735,7 +735,8 @@ every parameter of its appearance comes from two bytes and a size:
 
 ```
 drawZoomBob(x, y, z, row, col, unused, size)      /* 0x004040A0 */
-    quad half-extent = size * 160                 /* world units: 1600 = 1 m */
+    quad side = size * 160                        /* world units: 1600 = 1 m */
+    half-extent = side * 0.5                      /* Eng3d.dll 0x00407A63 */
     u0 = col * 32   u1 = u0 + 31
     v0 = row * 32   v1 = v0 + 31
     texture = the handle in 0x004F9F70
@@ -764,7 +765,17 @@ There are no colour parameters anywhere in the blob system, and there never
 were: **the palette is baked into `anim`.** Across the 54 sprite calls the row
 takes seven of the eight possible values (0, 1, 3, 4, 5, 6, 7 — row 2 is unused
 by any call), the starting column is 0 at every call but one (which starts at
-3), and the half-size takes ten values from 3 to 40 — 0.3 m to 4 m.
+3), and the size takes ten values from 3 to 40 — a side of 0.3 m to 4 m.
+
+**Corrected 2026-10-12: `size * 160` is the side, not the half-extent.** The
+host stores it as the width and the height of the quad it hands ordinal 63;
+Eng3d's projection (`0x00407A3F`) loads each with `fild [esi+0x0C|0x10]` and
+multiplies it by the float `0.5` at `0x00415048` before laying it either side
+of the projected centre. This document had stated the product as the
+half-extent, and the remake drew every sprite twice its size -- in play, every
+muzzle flash read as far too big. `blob_tables.py --check` now reads the
+halving too (`zoom.eng3d_halves_both_extents`, `zoom.half_constant`), and the
+cache's `half_extent_scale` is 80.
 
 Which row a creator picks lines up with what the picture shows, which is the
 cheapest sanity check available: the fire effects take row 0, the spore and
@@ -2323,4 +2334,5 @@ step:
 
 The same technique gives §7.3's sprite half-extent: `and eax,0xff; lea
 eax,[eax+eax*4]; shl eax,5` at `0x004040F0` is the `size * 160` this document
-already stated, and only the shift had been pinned.
+already stated, and only the shift had been pinned. *(That product is the
+quad's side; Eng3d halves it -- §7.3's correction.)*

@@ -1604,6 +1604,13 @@ TILE_SHIFT = 5
 SIZE_SCALE_SITE = 0x004040F3               # (v*5)<<5 = v*160 world units
 SIZE_SCALE_SHIFT = 5
 SIZE_SCALE = 160
+#: Eng3d.dll's zoom-bob projection (`0x00407A3F`, reached from ordinal 63)
+#: loads the two extents `[esi+0x0C]` and `[esi+0x10]` and multiplies each by
+#: the float at `ZOOM_HALF_CONST` before laying it either side of the centre:
+#: `size * 160` is the quad's **side**, not its half-extent.
+ZOOM_HALF_SITES = ((0x00407A60, 0x0C, 0x00407A63), (0x00407A69, 0x10, 0x00407A6C))
+ZOOM_HALF_CONST = 0x00415048
+ZOOM_HALF = 0.5
 ATLAS_TEXTURE = "anim"
 ATLAS_NAME_SITES = (0x0040301E, 0x00403270)
 ATLAS_HANDLE = 0x004F9F70
@@ -3575,6 +3582,19 @@ def run_checks(root: str) -> Checker:
     eng = Engine(root, ENG3D_DLL)
     glide = Engine(root, ENG3D_GLIDE)
 
+    # ---- the zoom bob's extent is halved in the renderer (docs/28 7.3) ---
+    # `fild dword [esi+disp8]` then `fmul dword [ZOOM_HALF_CONST]`, for the
+    # width and the height, and the constant is the float 0.5.
+    halving = all(
+        eng.pe.bytes_at(load, 3) == bytes((0xDB, 0x46, disp))
+        and eng.pe.bytes_at(mul, 6) == b"\xD8\x0D"
+        + struct.pack("<I", ZOOM_HALF_CONST)
+        for load, disp, mul in ZOOM_HALF_SITES)
+    ck.check("zoom.eng3d_halves_both_extents", halving,
+             "fild [esi+0x0C|0x10]; fmul [0x00415048] at 0x00407A60..6C")
+    ck.equal("zoom.half_constant", struct.unpack(
+        "<f", eng.pe.bytes_at(ZOOM_HALF_CONST, 4))[0], ZOOM_HALF)
+
     # The buffer is read by one idiom, present in both renderer builds and in
     # none of the three hosts: they write it, they never read it back.
     sites = eng.occurrences(JOINT_IDIOM)
@@ -5392,7 +5412,8 @@ def _setpiece_timing_checks(ck: "Checker", b: Binary) -> None:
     # The sprite half-extent: `SIZE_SCALE_SITE` pinned the shift and left the
     # factor of five unread, so `160` was a literal nothing checked.
     ck.equal("zoom.size_scale", _scaled(b, SIZE_SCALE_SITES), SIZE_SCALE)
-    ck.equal("zoom.half_extent_scale", ATLAS_HALF_EXTENT_SCALE, SIZE_SCALE)
+    ck.equal("zoom.half_extent_scale", ATLAS_HALF_EXTENT_SCALE,
+             SIZE_SCALE // 2, "Eng3d halves the side the host passes")
 
 
 def _creator_of_call(b: Binary) -> dict[int, int | None]:
@@ -7576,12 +7597,13 @@ SOUND_DOCUMENT_SCHEMA = "incubation.sound/1"
 BLOB_DOCUMENT_SCHEMA = "incubation.blobs/1"
 
 #: The sprite atlas: one 256x256 VISN record named ``anim``, an 8x8 grid of
-#: 32x32 tiles, drawn as a camera-facing quad of half-extent ``size * 160``
-#: world units (docs/28 section 7.3).
+#: 32x32 tiles, drawn as a camera-facing quad of side ``size * 160`` world
+#: units -- half-extent ``size * 80`` (docs/28 section 7.3).
 ATLAS_NAME = ATLAS_TEXTURE
-#: The half-extent scale is `SIZE_SCALE`, not a second copy of 160: it used to
-#: be one, and nothing read it.
-ATLAS_HALF_EXTENT_SCALE = SIZE_SCALE
+#: The half-extent scale derives from `SIZE_SCALE` and Eng3d's own halving,
+#: both read from the binaries. It was once `SIZE_SCALE` itself, which drew
+#: every sprite twice its size (corrected 2026-10-12).
+ATLAS_HALF_EXTENT_SCALE = round(SIZE_SCALE * ZOOM_HALF)
 
 
 def _case_path(root: Path, *parts: str) -> Path | None:

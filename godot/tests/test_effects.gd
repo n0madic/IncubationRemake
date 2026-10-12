@@ -707,6 +707,11 @@ func _check_diff(h: TestHarness) -> void:
 
 ## The sprite path's arithmetic: the atlas grid, the half-extent rule, and the
 ## quad count. docs/28 section 7.3 -- `(row, column, half-size x 160)`.
+## The cache's `tables/blobs.json`, or empty.
+func _blob_tables_document() -> Dictionary:
+	return CacheFixture.read_json(CacheFixture.cache_dir() + "/tables/blobs.json")
+
+
 ## docs/92 section 7.29: the effects' light comes from the sprite cloud's own
 ## blobs, ranked by how much flame they show, and the global table the scene
 ## shader reads is empty unless the preset asks for it.
@@ -727,7 +732,7 @@ func _check_effect_lights(h: TestHarness) -> void:
 
 	var lights: EffectLights = EffectLights.new()
 	lights.setup(atlas, {"atlas": {"tile": 4, "grid": 2, "size": 8,
-		"half_extent_scale": 160}})
+		"half_extent_scale": 80}})
 	var blobs: Array[Blob] = []
 	# Twenty flames of growing size, one dim blue sprite, one black one, a
 	# model blob and a delayed sprite: only flames and the blue rank, and the
@@ -784,13 +789,17 @@ func _check_sprites(h: TestHarness) -> void:
 	h.check("sprites.mesh", sprites.mesh != null
 		and sprites.mesh.get_surface_count() >= 0, "one ImmediateMesh")
 
-	# `size * 160` world units of half-extent, and 1600 units to the metre, so
-	# a size of 10 is one metre either side. The ten shipped sizes are 3..40,
-	# which is 0.3 m to 4 m -- worth pinning, because a factor here is the
-	# difference between a spark and a wall.
+	# `size * 160` world units of **side** -- Eng3d halves it -- and 1600 units
+	# to the metre, so a size of 10 is half a metre either side. The ten
+	# shipped sizes are 3..40, which is 0.15 m to 2 m -- worth pinning, because
+	# a factor here is the difference between a spark and a wall: at 160 every
+	# muzzle flash was drawn twice its size.
 	h.equal("sprites.half_extent_metre",
-		BlobSprites.HALF_EXTENT_SCALE / WorldSpace.WORLD_UNITS_PER_METRE, 0.1,
-		"a size of 1 is 0.1 m of half-extent")
+		BlobSprites.HALF_EXTENT_SCALE / WorldSpace.WORLD_UNITS_PER_METRE, 0.05,
+		"a size of 1 is 0.05 m of half-extent")
+	h.equal("sprites.cache_agrees", DictRead.as_int(DictRead.as_dict(
+		_blob_tables_document().get("atlas", {})).get("half_extent_scale", 0)),
+		int(BlobSprites.HALF_EXTENT_SCALE), "blob_tables.py reads the halving")
 	h.equal("sprites.grid", [BlobSprites.TILE, BlobSprites.GRID,
 		BlobSprites.ATLAS_SIZE], [32, 8, 256])
 	sprites.free()
