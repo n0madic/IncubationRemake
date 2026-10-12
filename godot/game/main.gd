@@ -187,6 +187,7 @@ var _backdrop_fx: BlobPool = null
 var _backdrop_hooks: GameBlobHooks = null
 var _backdrop_bgb: BgbEmitters = null
 var _backdrop_sprites: BlobSprites = null
+var _backdrop_lights: EffectLights = null
 var _backdrop_carry: float = 0.0
 ## The map's own `CDTrackProgram` argument, taken from the same `INIT MAP`
 ## run its emitters come from. What is sounding now is [AudioSystem]'s to
@@ -378,6 +379,8 @@ var _fx_hooks: GameBlobHooks = null
 ## `CreateBGB`'s twenty slots -- the only effect a **script** places by itself.
 var _bgb: BgbEmitters = null
 var _sprites: BlobSprites = null
+## The effects' light and halos -- docs/92 section 7.29, *enhanced* only.
+var _lights: EffectLights = null
 var _models: BlobModels = null
 var _special: SpecialObjects = null
 var _triggers: BlobTriggers = null
@@ -2874,8 +2877,30 @@ func apply_graphics() -> void:
 		var _rewritten: int = MeshBuilder.set_graphics(bank, preset)
 	var _changed: int = MeshBuilder.set_sampling(self,
 		GraphicsMode.sampling(preset))
+	_apply_effect_graphics(_sprites, _lights)
+	_apply_effect_graphics(_backdrop_sprites, _backdrop_lights)
 	get_viewport().msaa_3d = Viewport.MSAA_4X if GraphicsMode.msaa(preset) \
 		else Viewport.MSAA_DISABLED
+
+
+## The preset's sampling on an effect cloud, and its light and halos.
+func _apply_effect_graphics(sprites: BlobSprites, lights: EffectLights) -> void:
+	if sprites != null:
+		sprites.set_sampling(GraphicsMode.sampling(settings.graphics))
+	if lights != null:
+		lights.lights_enabled = GraphicsMode.effect_lights(settings.graphics)
+		lights.halos_enabled = GraphicsMode.halos(settings.graphics)
+
+
+## An [EffectLights] under `parent`, its tile colours read from the bank's
+## `anim` page `atlas_id`.
+func _make_lights(parent: Node, textures: Dictionary,
+		atlas_id: int) -> EffectLights:
+	var lights: EffectLights = EffectLights.new()
+	lights.name = "EffectLights"
+	parent.add_child(lights)
+	lights.setup(MeshBuilder.source_image(textures, atlas_id), _blob_tables)
+	return lights
 
 
 func close_campaign_screen() -> void:
@@ -3842,6 +3867,8 @@ func _build_backdrop_fires(mission: String, geometry: Dictionary,
 	var atlas: Texture2D = plain.get(atlas_id) if plain.has(atlas_id) else null
 	if atlas != null:
 		_backdrop_sprites.setup(atlas, _blob_tables)
+	_backdrop_lights = _make_lights(_backdrop_root, textures, atlas_id)
+	_apply_effect_graphics(_backdrop_sprites, _backdrop_lights)
 
 
 ## The `CDTrackProgram` argument out of a script run's events, or `""`.
@@ -3878,6 +3905,9 @@ func _tick_backdrop_fires(delta: float) -> void:
 			and _backdrop_rig.camera() != null:
 		var _drawn: int = _backdrop_sprites.rebuild(_backdrop_fx.blobs(),
 			_backdrop_rig.camera().global_transform.basis)
+		if _backdrop_lights != null:
+			var _lit: int = _backdrop_lights.rebuild(_backdrop_fx.blobs(),
+				_backdrop_rig.camera().global_transform.basis)
 
 
 ## Put the map's camera where `aMissionControl.cpp` puts it.
@@ -3937,6 +3967,7 @@ func _clear_backdrop() -> void:
 	_backdrop_hooks = null
 	_backdrop_bgb = null
 	_backdrop_sprites = null
+	_backdrop_lights = null
 	_backdrop_carry = 0.0
 	_backdrop_music = ""
 	_swing_carry = Vector2.ZERO
@@ -4018,6 +4049,7 @@ func _clear_mission() -> void:
 	# freed instance -- and `_fx` and `_special` would have gone on ticking a
 	# pool for a mission that is not there.
 	_sprites = null
+	_lights = null
 	_models = null
 	_fx = null
 	_fx_carry = 0.0
@@ -4407,6 +4439,8 @@ func _build_effects(mission: String, world_set: String,
 		push_warning("effects: %s has no '%s' texture; sprite effects will "
 			% [world_set, ATLAS_TEXTURE] + "not be drawn")
 	_sprites.setup(atlas, _blob_tables)
+	_lights = _make_lights(_scene_root, textures, atlas_id)
+	_apply_effect_graphics(_sprites, _lights)
 
 
 func _geometry_for(world_set: String) -> Dictionary:
@@ -5728,6 +5762,9 @@ func _draw_effects() -> void:
 	if _sprites != null and _rig != null and _rig.camera() != null:
 		var _drawn: int = _sprites.rebuild(_fx.blobs(),
 			_rig.camera().global_transform.basis)
+		if _lights != null:
+			var _lit: int = _lights.rebuild(_fx.blobs(),
+				_rig.camera().global_transform.basis)
 	if _models != null:
 		var _shown: int = _models.rebuild(_fx)
 

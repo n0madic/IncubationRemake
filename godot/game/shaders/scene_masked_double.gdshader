@@ -3,4 +3,5 @@ shader_type spatial;
 render_mode unshaded, cull_disabled, depth_draw_never;
 #define TEXTURED
 #define MASKED
+#define LIT
 #include "res://game/shaders/scene.gdshaderinc"

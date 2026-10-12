@@ -94,6 +94,17 @@ func _make_material(atlas: Texture2D) -> StandardMaterial3D:
 	return material
 
 
+## Nearest texel, or filtered under any other [GraphicsMode] sampling --
+## docs/92 section 7.29. The atlas needs no clamp and no mipmaps for it:
+## [method _uv_of] runs every quad from the centre of its tile's first texel
+## to the centre of its last, so a filtered read never reaches the next tile.
+func set_sampling(sampling: int) -> void:
+	if _material != null:
+		_material.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST \
+			if sampling == GraphicsMode.SAMPLING_NEAREST \
+			else BaseMaterial3D.TEXTURE_FILTER_LINEAR
+
+
 func drawn() -> int:
 	return _drawn
 

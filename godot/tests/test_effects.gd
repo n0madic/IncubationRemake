@@ -86,6 +86,7 @@ func run(h: TestHarness) -> void:
 	h.begin("effects", TestHarness.ORACLE_SPEC)
 	_check_diff(h)
 	_check_sprites(h)
+	_check_effect_lights(h)
 	_check_door(h)
 	_check_family(h)
 	_check_family_lever(h)
@@ -706,6 +707,63 @@ func _check_diff(h: TestHarness) -> void:
 
 ## The sprite path's arithmetic: the atlas grid, the half-extent rule, and the
 ## quad count. docs/28 section 7.3 -- `(row, column, half-size x 160)`.
+## docs/92 section 7.29: the effects' light comes from the sprite cloud's own
+## blobs, ranked by how much flame they show, and the global table the scene
+## shader reads is empty unless the preset asks for it.
+func _check_effect_lights(h: TestHarness) -> void:
+	# A 2 x 2 grid of 4-texel tiles: tile (0, 0) half orange flame on black,
+	# tile (0, 1) all dim blue, the rest black.
+	var atlas: Image = Image.create_empty(8, 8, false, Image.FORMAT_RGB8)
+	for y: int in range(4):
+		for x: int in range(4):
+			if x < 2:
+				atlas.set_pixel(x, y, Color8(240, 120, 0))
+			atlas.set_pixel(x + 4, y, Color8(0, 0, 60))
+	var colours: PackedColorArray = EffectLights.tile_colours(atlas, 4, 2)
+	h.equal("lights.tile_is_its_lit_texels",
+		[colours[0].r8, colours[0].g8, colours[0].b8, colours[0].a],
+		[240, 120, 0, 0.5], "the flame's colour, and the half it covers")
+	h.equal("lights.empty_tile", colours[2], Color(0, 0, 0, 0))
+
+	var lights: EffectLights = EffectLights.new()
+	lights.setup(atlas, {"atlas": {"tile": 4, "grid": 2, "size": 8,
+		"half_extent_scale": 160}})
+	var blobs: Array[Blob] = []
+	# Twenty flames of growing size, one dim blue sprite, one black one, a
+	# model blob and a delayed sprite: only flames and the blue rank, and the
+	# biggest flames first.
+	for index: int in range(20):
+		blobs.append(Blob.make({"kind": 7, "class_id": 2, "life": 10,
+			"x": index * 1600, "y": 0, "z": 1600, "aux": index + 1,
+			"rot_x": 0, "rot_y": 0}))
+	blobs.append(Blob.make({"kind": 7, "class_id": 2, "life": 10, "aux": 40,
+		"rot_x": 0, "rot_y": 1}))
+	blobs.append(Blob.make({"kind": 7, "class_id": 2, "life": 10, "aux": 40,
+		"rot_x": 1, "rot_y": 0}))
+	blobs.append(Blob.make({"kind": 7, "class_id": 0, "life": 10, "aux": 40}))
+	blobs.append(Blob.make({"kind": 7, "class_id": 2, "life": 10, "aux": 40,
+		"delay": 3}))
+	var ranked: Array[EffectLights.Source] = lights.sources(blobs)
+	h.equal("lights.at_most_the_shader's_limit", ranked.size(),
+		EffectLights.LIMIT)
+	h.check("lights.brightest_first", ranked[0].half > ranked[1].half
+		and ranked[0].colour.r8 == 240, "the largest flame leads")
+	h.check("lights.reach_is_capped", ranked[0].radius
+		<= EffectLights.MAX_RADIUS, "a point light without shadows")
+	# Off unless asked: the table stays empty, and so does the halo mesh.
+	h.equal("lights.off_by_default", [lights.rebuild(blobs, Basis.IDENTITY),
+		lights.lit()], [0, 0])
+	lights.lights_enabled = true
+	lights.halos_enabled = true
+	h.equal("lights.on", [lights.rebuild(blobs, Basis.IDENTITY), lights.lit()],
+		[EffectLights.LIMIT, EffectLights.LIMIT])
+	lights.lights_enabled = false
+	var _halos_only: int = lights.rebuild(blobs, Basis.IDENTITY)
+	h.equal("lights.halos_do_not_light", lights.lit(), 0,
+		"the table is the light; the halos are drawn on their own")
+	lights.free()
+
+
 func _check_sprites(h: TestHarness) -> void:
 	var sprites: BlobSprites = BlobSprites.new()
 	sprites.setup(null, {})

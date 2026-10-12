@@ -45,3 +45,14 @@ renderer/rendering_method="gl_compatibility"
 renderer/rendering_method.mobile="gl_compatibility"
 textures/vram_compression/import_etc2_astc=true
 environment/defaults/default_clear_color=Color(0, 0, 0, 1)
+
+[shader_globals]
+
+fx_light_count={
+"type": "int",
+"value": 0
+}
+fx_lights={
+"type": "sampler2D",
+"value": ""
+}

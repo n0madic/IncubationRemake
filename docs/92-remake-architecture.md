@@ -3159,6 +3159,43 @@ averaging, not bleeding: `_C_141`'s far view is softer and its small crates
 lose contrast against the sharp preset, whose crispness there is aliasing
 that shimmers as the camera moves.
 
+**Light from the effects, and halos -- *enhanced* only.** `EffectLights`
+(`game/fx/effect_lights.gd`) sits beside each sprite cloud, the mission's and
+the campaign map's. Every sprite the pool draws is additive, so each is an
+emitter already: its colour is the mean of its atlas tile's lit texels
+(brighter than 24 in some channel -- a plain mean is the flame diluted by its
+own black), its weight that colour's luminance times the share of the tile it
+covers times the blob's half-extent. Each frame the sixteen heaviest go into
+a 16 x 2 `RGBAF` table the scene shader reads through the global uniforms
+`fx_lights` and `fx_light_count` (`project.godot`'s `[shader_globals]`): a
+quadratic fall-off to nothing at five half-extents, at most 8 m, laid on the
+page as a gain, `albedo * (1 + light)`, so black stays black. Only the
+opaque, colour-keyed and flat kinds take it -- the blended kinds are the
+light. A point light without shadows shines through walls, which is why the
+reach is short. At a count of zero the shader multiplies by exactly one: the
+*original* and *smooth* presets stay pixel-identical with the lit shader in
+place. The table is global, so whichever instance draws owns it and leaving
+the tree hands back zero; `/state`'s `effect_lights` reports the count.
+
+The halo is the same sources drawn again as additive discs
+(`game/shaders/halo.gdshader`, a 64-texel quadratic fall-off) of 2.5
+half-extents at 0.8 of the flame's colour. **Not the environment's glow**,
+which was measured first: in the Compatibility renderer turning glow on --
+even at intensity 0 -- moved a background of 40 to 160 and saturated an
+additive quad that should read 168, and `adjustment_enabled` alone moved 40
+to 38. The engine's reason is in its source: with glow on, the scene writes
+into its 10-bit buffer at a quarter (`luminance_multiplier = 0.25`) and the
+post pass multiplies back, and the clear colour is not scaled; glow there is
+always a screen blend and never per material. Halos keep the picture under
+them exact.
+
+**The effect sprites are smoothed under any preset but the original.** §7.28
+left them out on a reason that did not hold (see the correction there);
+`BlobSprites.set_sampling` switches their material, without mipmaps.
+
+**MSAA 4x** is the *enhanced* preset's, on the root viewport. FXAA and TAA
+do not exist in the Compatibility renderer.
+
 ---
 
 ## 8. Standing constraints

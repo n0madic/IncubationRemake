@@ -9,6 +9,8 @@
 // TEXTURED     the face samples its page; otherwise it paints COLOR.
 // MASKED       the RGB565 colour key: alpha 0 is a hole (a scissor).
 // TRANSLUCENT  the face is blended, its alpha from the page or from COLOR.
+// LIT          the face takes the effects' light (EffectLights): the opaque,
+//              colour-keyed and flat kinds; the blended ones are the light.
 
 // The page. Filtered reads go through its sampler, clamped; the texel-by-texel
 // read the shipped renderers make is `texelFetch`, which no sampler state
@@ -27,9 +29,42 @@ uniform float max_lod = 3.0;
 // The face's own (u0, v0, u1, v1) on its page, from CUSTOM0.
 varying vec4 face_rect;
 
+#ifdef LIT
+// EffectLights' table: texel (i, 0) is light i's position in metres and its
+// radius, texel (i, 1) its colour. `fx_light_count` is 0 unless the preset
+// asks for effect light, and multiplying by exactly one leaves every other
+// preset's picture as it was.
+global uniform sampler2D fx_lights;
+global uniform int fx_light_count;
+const int FX_LIGHT_LIMIT = 16;
+varying vec3 world_position;
+#endif
+
 void vertex() {
 	face_rect = CUSTOM0;
+#ifdef LIT
+	world_position = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+#endif
 }
+
+#ifdef LIT
+// The effects' light at this point: each source adds its colour with a
+// quadratic fall-off to nothing at its radius. Through walls, as a point
+// light without shadows is -- the radii are kept to a few fields for that.
+vec3 effect_light() {
+	vec3 sum = vec3(0.0);
+	for (int i = 0; i < FX_LIGHT_LIMIT; i++) {
+		if (i >= fx_light_count) {
+			break;
+		}
+		vec4 where = texelFetch(fx_lights, ivec2(i, 0), 0);
+		vec3 colour = texelFetch(fx_lights, ivec2(i, 1), 0).rgb;
+		float near = max(1.0 - distance(world_position, where.xyz) / where.w, 0.0);
+		sum += colour * near * near;
+	}
+	return sum;
+}
+#endif
 
 #ifdef TEXTURED
 // The mipmapped read, kept inside the face's own rectangle of the atlas.
@@ -99,5 +134,10 @@ void fragment() {
 #ifdef TRANSLUCENT
 	ALPHA = COLOR.a;
 #endif
+#endif
+#ifdef LIT
+	// The page already holds the original's light; the effects' is laid on
+	// it as a gain, so a black texel stays black.
+	ALBEDO *= vec3(1.0) + effect_light();
 #endif
 }

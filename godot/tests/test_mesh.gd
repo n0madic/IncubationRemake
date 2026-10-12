@@ -333,7 +333,7 @@ func _check_sampling(h: TestHarness) -> void:
 	h.check("sampling.one_sampler_state",
 		include.contains("uniform sampler2D page : hint_default_white, "
 			+ "filter_linear_mipmap_anisotropic, repeat_disable;")
-		and include.count("uniform sampler2D") == 1
+		and include.count("\nuniform sampler2D") == 1
 		and include.contains("texelFetch(page"))
 
 	var root: Node3D = Node3D.new()

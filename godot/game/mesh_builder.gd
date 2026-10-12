@@ -727,6 +727,14 @@ static func set_graphics(textures: Dictionary, preset: int) -> int:
 	return rewritten
 
 
+## The bank's page `id` as the cache holds it -- the exact 24-bit decode --
+## read from its PNG rather than back from the renderer; null when the bank has
+## no such page.
+static func source_image(textures: Dictionary, id: int) -> Image:
+	var sources: Dictionary = DictRead.as_dict(textures.get(SOURCES, {}))
+	return _read_png(DictRead.as_string(sources.get(id, "")))
+
+
 ## The bank's texture `id`, or null.
 static func plain_texture(textures: Dictionary, id: int) -> Texture2D:
 	var bank: Dictionary = DictRead.as_dict(textures.get(PLAIN, {}))

@@ -61,6 +61,9 @@ func build(frame: int) -> Dictionary:
 		"booted": booted(),
 		"picture": picture(),
 		"pool": pool(),
+		# docs/92 section 7.29: how many effect lights the scene shader reads
+		# now -- the mission's or, while it is up, the campaign map's.
+		"effect_lights": effect_lights(),
 		"overlay": overlay(),
 		"camera": camera(),
 		"shell": shell(),
@@ -262,6 +265,17 @@ func picture() -> Dictionary:
 		"special_objects": _main._special.live_count() \
 			if _main._special != null else 0,
 	}
+
+
+func effect_lights() -> Dictionary:
+	var mission: EffectLights = _main._lights
+	var backdrop: EffectLights = _main._backdrop_lights
+	return {"mission": mission.lit() if mission != null else -1,
+		"backdrop": backdrop.lit() if backdrop != null else -1,
+		"first": (mission.describe() if mission != null and mission.lit() > 0
+			else backdrop.describe() if backdrop != null else []),
+		"backdrop_live": _main._backdrop_fx.blobs().size()
+			if _main._backdrop_fx != null else -1}
 
 
 ## `live` is every record in use, by kind; `counted` is the sweep's own count
