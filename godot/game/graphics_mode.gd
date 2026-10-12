@@ -11,7 +11,7 @@ extends RefCounted
 ## numbers. Everything here is presentation: nothing enters a save or the
 ## canonical hash.
 ##
-## | Preset | Sampling | Colour | Effect light, halos, MSAA |
+## | Preset | Sampling | Colour | Effect light, halos, sun shadow, MSAA |
 ## |---|---|---|---|
 ## | `ORIGINAL` | nearest texel | the engine's RGB565 | off |
 ## | `SMOOTH` | bilinear, clamped | the exact 24-bit decode | off |
@@ -52,6 +52,11 @@ static func effect_lights(preset: int) -> bool:
 
 
 static func halos(preset: int) -> bool:
+	return clamped(preset) >= ENHANCED
+
+
+## [SunShadow]: the sun's shadow map over the scene.
+static func shadows(preset: int) -> bool:
 	return clamped(preset) >= ENHANCED
 
 

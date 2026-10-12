@@ -56,6 +56,8 @@ const DRAWS_NOTHING: Array[int] = [KIND_NONE]
 
 ## `0x004089BB` -- an exact half-and-half RGB565 blend.
 const BLEND_ALPHA: float = 0.5
+## SurfaceTool's smooth group for faceted normals.
+const FLAT_SMOOTH_GROUP: int = -1
 
 const NO_TEXTURE: int = -1
 
@@ -127,6 +129,13 @@ const VARIANT_ADD: String = "add"
 const VARIANT_SUB: String = "sub"
 const VARIANT_FLAT: String = "flat"
 const VARIANT_FLAT_BLEND: String = "flat_blend"
+## The variants that take the effects' light and the sun's shadow
+## (`#define LIT`), whose vertex alpha is free.
+const LIT_VARIANTS: Array[String] = [VARIANT_OPAQUE, VARIANT_MASKED,
+	VARIANT_MASKED_DOUBLE, VARIANT_FLAT]
+## A lit face's vertex alpha when it takes the sun's shadow on every face (a
+## body's); 1 when only on faces turned to the sun (the scene's).
+const SUN_ALL_FACES: float = 0.0
 
 ## The key a face of the **shared unit geometry** carries instead of `texture`.
 ##
@@ -145,9 +154,12 @@ const PART_NODE: String = "part_%d"
 const PART_MESH_NODE: String = "mesh"
 
 
+## `body` marks the lit faces to take the sun's shadow on every face
+## ([constant SUN_ALL_FACES]) -- a Charisma body's parts, whose shadow map
+## holds no body ([SunShadow]).
 static func build(prototype: Dictionary,
-		textures: Dictionary) -> ArrayMesh:
-	return build_scope(prototype, textures, ROOT_SCOPE)
+		textures: Dictionary, body: bool = false) -> ArrayMesh:
+	return build_scope(prototype, textures, ROOT_SCOPE, body)
 
 
 ## One prototype as a node tree: a [constant BODY_NODE] [MeshInstance3D] for
@@ -236,7 +248,7 @@ static func part_anims(prototype: Dictionary) -> Array:
 ## translation subtracted, so the caller can put the translation on the node
 ## and rotate about the joint rather than about the model origin.
 static func build_scope(prototype: Dictionary, textures: Dictionary,
-		scope: int) -> ArrayMesh:
+		scope: int, body: bool = false) -> ArrayMesh:
 	var vertices: Array = DictRead.as_array(prototype["vertices"])
 	var faces: Array = DictRead.as_array(prototype["faces"])
 	var parts: Array = DictRead.as_array(prototype.get("parts", []))
@@ -269,7 +281,7 @@ static func build_scope(prototype: Dictionary, textures: Dictionary,
 		var fields: PackedStringArray = DictRead.as_string(key).split(".")
 		var bucket: Array = buckets[key]
 		_surface(vertices, bucket, fields[0].to_int(),
-			fields[1].to_int() - 1, textures, mesh)
+			fields[1].to_int() - 1, textures, mesh, body)
 	return mesh
 
 
@@ -338,9 +350,15 @@ static func _localised(vertices: Array, translation: Array) -> Array:
 
 
 static func _surface(vertices: Array, faces: Array, kind: int, texture: int,
-		textures: Dictionary, into: ArrayMesh) -> void:
+		textures: Dictionary, into: ArrayMesh, body: bool = false) -> void:
 	var tool: SurfaceTool = SurfaceTool.new()
 	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
+	# **Flat normals.** The engine shades nothing, so the normals are read only
+	# by the sun's shadow (docs/92 section 7.29), and there smoothed ones were
+	# wrong twice: a wall's front bent towards its top, so the top of the front
+	# counted as turned to the sun, and the map's normal offset pushed along
+	# the bent normal, which hatched sun-facing walls with acne (`_C_166`).
+	tool.set_smooth_group(FLAT_SMOOTH_GROUP)
 	# Each vertex carries its face's rectangle on the page, which the
 	# mipmapped read stays inside (`scene.gdshaderinc`).
 	tool.set_custom_format(FACE_RECT_CHANNEL, SurfaceTool.CUSTOM_RGBA_FLOAT)
@@ -364,6 +382,10 @@ static func _surface(vertices: Array, faces: Array, kind: int, texture: int,
 			colour.a = BLEND_ALPHA
 		if FLAT_KINDS.has(kind) and not curve.is_empty():
 			colour = PaletteCurve.colour(colour, curve)
+		# The lit variants read no alpha from COLOR, so it carries the sun
+		# switch there; the blended ones keep theirs.
+		if body and LIT_VARIANTS.has(_variant(kind)):
+			colour.a = SUN_ALL_FACES
 		var points: PackedVector3Array = _points_of(vertices, indices)
 		if points.size() != indices.size():
 			continue

@@ -33,6 +33,10 @@ const SCAN_SKIP_PREFIX: String = "#"
 
 const GAME_DIR: String = "res://game"
 const TESTS_DIR: String = "res://tests"
+## A world of its own, and the light it must carry (see
+## [method _check_own_worlds_carry_the_sun_fill]).
+const OWN_WORLD_MARK: String = "own_world_3d = true"
+const SUN_FILL_MARK: String = "SunShadow.fill()"
 
 
 func run(h: TestHarness) -> void:
@@ -40,6 +44,7 @@ func run(h: TestHarness) -> void:
 	_check_snapshot_isolation(h)
 	_check_no_forbidden_symbols(h)
 	_check_no_test_classes_in_shipping_code(h)
+	_check_own_worlds_carry_the_sun_fill(h)
 	_check_empty_result_is_sized(h)
 
 
@@ -152,6 +157,26 @@ func _check_no_test_classes_in_shipping_code(h: TestHarness) -> void:
 						offences.append("%s:%d %s"
 							% [path, line_number, name])
 	h.equal("test_classes.unused_by_shipping_code", ", ".join(offences), "")
+
+
+## Every [World3D] of its own carries [method SunShadow.fill] (docs/92 section
+## 7.29). While a sun is up anywhere, the lit materials paint no EMISSION and
+## draw their whole colour through a light's pass, so a world with no light
+## draws its prototypes and bodies black -- the upgrade screen's soldier was
+## that world, and the next inset is the one this keeps from repeating it.
+func _check_own_worlds_carry_the_sun_fill(h: TestHarness) -> void:
+	var own_worlds: PackedStringArray = PackedStringArray()
+	var unlit: PackedStringArray = PackedStringArray()
+	for path: String in _scripts_under(GAME_DIR):
+		var text: String = FileAccess.get_file_as_string(path)
+		if not text.contains(OWN_WORLD_MARK):
+			continue
+		own_worlds.append(path)
+		if not text.contains(SUN_FILL_MARK):
+			unlit.append(path)
+	h.check("own_world.found", not own_worlds.is_empty(),
+		"the upgrade screen's inset at least; none means nothing was scanned")
+	h.equal("own_world.carries_the_sun_fill", ", ".join(unlit), "")
 
 
 func _class_names_under(directory: String) -> PackedStringArray:

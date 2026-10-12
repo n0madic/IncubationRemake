@@ -351,6 +351,7 @@ func _build_model_window() -> void:
 	camera.position = Vector3(0.0, MODEL_CAMERA_HEIGHT, MODEL_CAMERA_DISTANCE)
 	camera.rotation_degrees = Vector3(MODEL_CAMERA_PITCH, 0.0, 0.0)
 	_viewport.add_child(camera)
+	_viewport.add_child(SunShadow.fill())
 	var view: TextureRect = TextureRect.new()
 	view.texture = _viewport.get_texture()
 	view.mouse_filter = Control.MOUSE_FILTER_IGNORE

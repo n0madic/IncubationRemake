@@ -15,6 +15,9 @@ extends Node3D
 ## `_C_140` is the mission this stage plays: the first one whose squad, aliens
 ## and win conditions are all in the `.lev`, so it can be won without the
 ## campaign layer (docs/94).
+## TODO: temporary -- a debug build's key that steps the graphics preset in
+## play ([method _input], [enum DebugKeyAction]).
+const GRAPHICS_CYCLE_KEY: Key = KEY_F10
 const DEFAULT_MISSION: String = "_C_140"
 const MISSION_ARG: String = "--mission="
 ## `--campaign=N` -- start chain N and go straight to its map, past the menu.
@@ -188,6 +191,7 @@ var _backdrop_hooks: GameBlobHooks = null
 var _backdrop_bgb: BgbEmitters = null
 var _backdrop_sprites: BlobSprites = null
 var _backdrop_lights: EffectLights = null
+var _backdrop_sun: SunShadow = null
 var _backdrop_carry: float = 0.0
 ## The map's own `CDTrackProgram` argument, taken from the same `INIT MAP`
 ## run its emitters come from. What is sounding now is [AudioSystem]'s to
@@ -218,6 +222,9 @@ var _sequence_manifest: Dictionary = {}
 ## The cutscene being played, and why -- one of [CampaignHost]'s `OPENING_*`
 ## kinds, [constant SEQUENCE_DIALOGUE] or [constant SEQUENCE_DEBUG].
 var _sequence: SequencePlayer = null
+## The roots [method play_sequence] hid, for [method _drop_sequence] to show
+## again -- and no other.
+var _hidden_by_sequence: Array[Node3D] = []
 var _sequence_kind: String = ""
 ## The three `Sleep` holds of the original's front end, as a countdown in
 ## [method _process] rather than a timer, so the agent's `wait` sees them and
@@ -381,6 +388,8 @@ var _bgb: BgbEmitters = null
 var _sprites: BlobSprites = null
 ## The effects' light and halos -- docs/92 section 7.29, *enhanced* only.
 var _lights: EffectLights = null
+## The sun's shadow -- the same section, *enhanced* only.
+var _sun: SunShadow = null
 var _models: BlobModels = null
 var _special: SpecialObjects = null
 var _triggers: BlobTriggers = null
@@ -1721,6 +1730,23 @@ func _deploy_record() -> UnitState:
 	return campaign.state.roster.record(_deploy_slot)
 
 
+## [constant GRAPHICS_CYCLE_KEY]: step the graphics preset in place and name
+## it. TODO: temporary, with the key.
+func _cycle_graphics() -> void:
+	_step_option("graphics")
+	_say_graphics()
+
+
+## The preset just stepped to, on the HUD's caption label -- only while the HUD
+## is drawn: a line set behind a plate or a cutscene would turn up long after,
+## when the mission view comes back.
+func _say_graphics() -> void:
+	if _hud == null or _strings == null or not _hud.visible:
+		return
+	_hud.set_line("%s: %s" % [_strings.text("shell.graphics"),
+		_strings.text("shell.graphics.%d" % settings.graphics)])
+
+
 ## One line on the HUD's caption label, `deploy.<name>` -- the interface's
 ## hint and every refusal, spoken (docs/92 section 7.4). A name the
 ## catalogue has no line for comes back as the marker rather than as a
@@ -2369,10 +2395,13 @@ func play_sequence(id: int, full: bool, kind: String) -> CampaignScreen:
 		return null
 	_sequence = player
 	_sequence_kind = kind
-	if _backdrop_root != null:
-		_backdrop_root.visible = false
-	if _scene_root != null:
-		_scene_root.visible = false
+	# Only what was drawn is hidden, and only that comes back: each root
+	# carries a sun, and two suns up over one world light every face twice.
+	_hidden_by_sequence.clear()
+	for root: Node3D in [_backdrop_root, _scene_root]:
+		if root != null and root.visible:
+			root.visible = false
+			_hidden_by_sequence.append(root)
 	player.camera().current = true
 	close_campaign_screen()
 	var screen: SequenceScreen = SequenceScreen.new()
@@ -2428,14 +2457,15 @@ func _drop_sequence() -> void:
 	_sequence.free()
 	_sequence = null
 	_sequence_kind = ""
-	if _backdrop_root != null:
+	if _backdrop_root != null and _hidden_by_sequence.has(_backdrop_root):
 		_backdrop_root.visible = true
 		if _backdrop_rig != null and _backdrop_rig.camera() != null:
 			_backdrop_rig.camera().current = true
-	if _scene_root != null:
+	if _scene_root != null and _hidden_by_sequence.has(_scene_root):
 		_scene_root.visible = true
 		if _rig != null and _rig.camera() != null:
 			_rig.camera().current = true
+	_hidden_by_sequence.clear()
 	if _audio != null and _audio.music_source().begins_with(
 			AudioSystem.program_source("", AudioTables.FAMILY_TRACK)):
 		_audio.stop_music()
@@ -2875,21 +2905,29 @@ func apply_graphics() -> void:
 		banks.append(_textures)
 	for bank: Dictionary in banks:
 		var _rewritten: int = MeshBuilder.set_graphics(bank, preset)
+	# A cutscene's bank is its own: it moves with the player, which also
+	# opens its next directory at the new preset.
+	if _sequence != null:
+		_sequence.set_graphics(preset)
 	var _changed: int = MeshBuilder.set_sampling(self,
 		GraphicsMode.sampling(preset))
-	_apply_effect_graphics(_sprites, _lights)
-	_apply_effect_graphics(_backdrop_sprites, _backdrop_lights)
+	_apply_effect_graphics(_sprites, _lights, _sun)
+	_apply_effect_graphics(_backdrop_sprites, _backdrop_lights, _backdrop_sun)
 	get_viewport().msaa_3d = Viewport.MSAA_4X if GraphicsMode.msaa(preset) \
 		else Viewport.MSAA_DISABLED
 
 
-## The preset's sampling on an effect cloud, and its light and halos.
-func _apply_effect_graphics(sprites: BlobSprites, lights: EffectLights) -> void:
+## The preset's sampling on an effect cloud, its light and halos, and the
+## sun's shadow over the same scene.
+func _apply_effect_graphics(sprites: BlobSprites, lights: EffectLights,
+		sun: SunShadow) -> void:
 	if sprites != null:
 		sprites.set_sampling(GraphicsMode.sampling(settings.graphics))
 	if lights != null:
 		lights.lights_enabled = GraphicsMode.effect_lights(settings.graphics)
 		lights.halos_enabled = GraphicsMode.halos(settings.graphics)
+	if sun != null:
+		sun.set_enabled(GraphicsMode.shadows(settings.graphics))
 
 
 ## An [EffectLights] under `parent`, its tile colours read from the bank's
@@ -3868,7 +3906,9 @@ func _build_backdrop_fires(mission: String, geometry: Dictionary,
 	if atlas != null:
 		_backdrop_sprites.setup(atlas, _blob_tables)
 	_backdrop_lights = _make_lights(_backdrop_root, textures, atlas_id)
-	_apply_effect_graphics(_backdrop_sprites, _backdrop_lights)
+	_backdrop_sun = SunShadow.new()
+	_backdrop_root.add_child(_backdrop_sun)
+	_apply_effect_graphics(_backdrop_sprites, _backdrop_lights, _backdrop_sun)
 
 
 ## The `CDTrackProgram` argument out of a script run's events, or `""`.
@@ -3968,6 +4008,7 @@ func _clear_backdrop() -> void:
 	_backdrop_bgb = null
 	_backdrop_sprites = null
 	_backdrop_lights = null
+	_backdrop_sun = null
 	_backdrop_carry = 0.0
 	_backdrop_music = ""
 	_swing_carry = Vector2.ZERO
@@ -4050,6 +4091,7 @@ func _clear_mission() -> void:
 	# pool for a mission that is not there.
 	_sprites = null
 	_lights = null
+	_sun = null
 	_models = null
 	_fx = null
 	_fx_carry = 0.0
@@ -4440,7 +4482,9 @@ func _build_effects(mission: String, world_set: String,
 			% [world_set, ATLAS_TEXTURE] + "not be drawn")
 	_sprites.setup(atlas, _blob_tables)
 	_lights = _make_lights(_scene_root, textures, atlas_id)
-	_apply_effect_graphics(_sprites, _lights)
+	_sun = SunShadow.new()
+	_scene_root.add_child(_sun)
+	_apply_effect_graphics(_sprites, _lights, _sun)
 
 
 func _geometry_for(world_set: String) -> Dictionary:
@@ -5409,6 +5453,7 @@ enum DebugKeyAction {
 	LATTICE,
 	NEXT_MISSION,
 	PREVIOUS_MISSION,
+	GRAPHICS_CYCLE,
 }
 
 
@@ -5430,6 +5475,8 @@ static func debug_key_action(keycode: int, debug_build: bool) -> int:
 			return DebugKeyAction.NEXT_MISSION
 		KEY_BRACKETLEFT:
 			return DebugKeyAction.PREVIOUS_MISSION
+		GRAPHICS_CYCLE_KEY:
+			return DebugKeyAction.GRAPHICS_CYCLE
 	return DebugKeyAction.NONE
 
 
@@ -5447,6 +5494,8 @@ func _run_debug_key(action: int) -> void:
 			show_mission(1)
 		DebugKeyAction.PREVIOUS_MISSION:
 			show_mission(-1)
+		DebugKeyAction.GRAPHICS_CYCLE:
+			_cycle_graphics()
 
 
 ## How far one trackpad pan event moves the zoom.  Pan deltas arrive in "lines"
@@ -5832,6 +5881,21 @@ func _on_ai_step(event: Dictionary) -> float:
 		# comes back with the note when the playback drains.
 		_refresh_status(_status_note)
 	return hold
+
+## TODO: temporary, with [constant GRAPHICS_CYCLE_KEY]. Read in `_input`, ahead
+## of every screen: the plates that end on any key -- a cutscene, the splash,
+## the credits -- answer in their own `_unhandled_input`, which runs before
+## this node's, and would take the key as "skip".
+func _input(event: InputEvent) -> void:
+	if _leaving or not event is InputEventKey:
+		return
+	var key: InputEventKey = event
+	if not key.is_pressed() or key.is_echo() or debug_key_action(key.keycode,
+			_debug_build) != DebugKeyAction.GRAPHICS_CYCLE:
+		return
+	_run_debug_key(DebugKeyAction.GRAPHICS_CYCLE)
+	get_viewport().set_input_as_handled()
+
 
 func _unhandled_input(event: InputEvent) -> void:
 	# Nothing is acted on while the audio is being given its frames before a

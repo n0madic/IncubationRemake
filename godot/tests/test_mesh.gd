@@ -29,6 +29,8 @@ extends TestSuite
 ## plane: (0,0) (4,0) (4,4) (2,1) (0,4).  The fourth vertex points **inwards**
 ## from the top edge, and it is not adjacent to vertex 0 -- which is what makes
 ## a fan from vertex 0 emit a triangle outside the outline.
+## The scene shader's shared body, read as text by the sun's contract check.
+const SCENE_INCLUDE: String = "res://game/shaders/scene.gdshaderinc"
 const REFLEX: Array = [
 	Vector3(0.0, 0.0, 0.0), Vector3(4.0, 0.0, 0.0), Vector3(4.0, 0.0, 4.0),
 	Vector3(2.0, 0.0, 1.0), Vector3(0.0, 0.0, 4.0),
@@ -184,17 +186,32 @@ func _check_draw_kinds(h: TestHarness) -> void:
 		MeshBuilder.VARIANT_OPAQUE, "the dominant kind is opaque")
 	h.check("kind.10.depth", _render_mode(opaque).has("depth_draw_opaque")
 		and not _defines(opaque).has("TRANSLUCENT"))
+	# The original bakes its light in, so no variant takes Godot's light as
+	# light: the blended ones are unshaded, and the lit ones read only the
+	# sun's shadow map (SunShadow) -- no ambient, no specular.
 	var unlit: Array[String] = []
+	var shadowed: Array[String] = []
 	for variant: String in [MeshBuilder.VARIANT_OPAQUE,
 			MeshBuilder.VARIANT_MASKED, MeshBuilder.VARIANT_MASKED_DOUBLE,
 			MeshBuilder.VARIANT_ADD, MeshBuilder.VARIANT_SUB,
 			MeshBuilder.VARIANT_FLAT, MeshBuilder.VARIANT_FLAT_BLEND]:
 		var shader: Shader = load(MeshBuilder.SHADER_DIR + variant
 			+ MeshBuilder.SHADER_SUFFIX)
-		if shader != null and _mode_of(shader.code).has("unshaded"):
+		if shader == null:
+			continue
+		var mode: PackedStringArray = _mode_of(shader.code)
+		if mode.has("unshaded"):
 			unlit.append(variant)
-	h.equal("kind.all.unshaded", unlit.size(), 7,
-		"the original bakes its light in, so any Godot light is infidelity")
+		elif shader.code.contains("#define LIT") \
+				and mode.has("ambient_light_disabled") \
+				and mode.has("specular_disabled"):
+			shadowed.append(variant)
+	h.equal("kind.blended.unshaded", unlit, [MeshBuilder.VARIANT_ADD,
+		MeshBuilder.VARIANT_SUB, MeshBuilder.VARIANT_FLAT_BLEND])
+	h.equal("kind.lit.shadow_only", shadowed, [MeshBuilder.VARIANT_OPAQUE,
+		MeshBuilder.VARIANT_MASKED, MeshBuilder.VARIANT_MASKED_DOUBLE,
+		MeshBuilder.VARIANT_FLAT],
+		"lit for the shadow map alone: no ambient, no specular")
 	# docs/31 section 4.4 lists the textured kinds' shading as "none (decal)":
 	# the face colour is not read for them.  Multiplying it in darkened every
 	# textured surface -- `World_A00` carries (123,125,123) on its textured
@@ -328,8 +345,7 @@ func _check_sampling(h: TestHarness) -> void:
 	# **One sampler.** The Compatibility renderer keeps the filter on the
 	# texture object, so a page bound to two differently filtered uniforms is
 	# filtered in both; the texel-by-texel read is `texelFetch` instead.
-	var include: String = FileAccess.get_file_as_string(
-		"res://game/shaders/scene.gdshaderinc")
+	var include: String = FileAccess.get_file_as_string(SCENE_INCLUDE)
 	h.check("sampling.one_sampler_state",
 		include.contains("uniform sampler2D page : hint_default_white, "
 			+ "filter_linear_mipmap_anisotropic, repeat_disable;")
@@ -383,6 +399,71 @@ func _check_sampling(h: TestHarness) -> void:
 	h.equal("rect.reaches_the_vertices",
 		Array(custom.slice(0, 4)) if custom.size() >= 4 else [],
 		[0.0, 0.0, 0.125, 0.25], "u up to 4096 of 32768, v up to 8192")
+
+	# docs/92 section 7.29: a body's lit faces carry the every-face switch in
+	# their vertex alpha; a blended face keeps its blend.
+	var mixed: Dictionary = quad.duplicate(true)
+	DictRead.as_array(mixed["faces"]).append({
+		"draw_kind": MeshBuilder.KIND_FLAT_BLEND, "rgb": [0, 0, 0],
+		"indices": [0, 1, 2], "uvs": []})
+	var alphas: Array = []
+	for body: bool in [false, true]:
+		var built_mesh: ArrayMesh = MeshBuilder.build(mixed, sharp_bank, body)
+		for surface: int in range(built_mesh.get_surface_count()):
+			var colours: PackedColorArray = \
+				built_mesh.surface_get_arrays(surface)[Mesh.ARRAY_COLOR]
+			# Vertex colours are stored in 8 bits: 0.5 comes back as 127/255.
+			alphas.append([MeshBuilder.variant_of(
+				built_mesh.surface_get_material(surface)),
+				roundi(colours[0].a * 255.0) if colours.size() > 0 else -1])
+	h.equal("sun.body_faces_take_every_face", alphas, [
+		[MeshBuilder.VARIANT_FLAT_BLEND, 127],
+		[MeshBuilder.VARIANT_OPAQUE, 255],
+		[MeshBuilder.VARIANT_FLAT_BLEND, 127],
+		[MeshBuilder.VARIANT_OPAQUE, roundi(MeshBuilder.SUN_ALL_FACES * 255.0)]])
+
+	# Faceted normals: a floor and a wall sharing an edge keep one normal
+	# each. Smoothed across the shared corners, the wall's bent towards the
+	# floor and its top took the sun's shadow (docs/92 section 7.29).
+	var corner: Dictionary = {
+		"vertices": [[0, 0, 0], [1600, 0, 0], [1600, 1600, 0], [0, 1600, 0],
+			[1600, 0, 1600], [0, 0, 1600]],
+		"faces": [
+			{"draw_kind": MeshBuilder.KIND_FLAT, "rgb": [9, 9, 9],
+				"indices": [0, 1, 2, 3], "uvs": []},
+			{"draw_kind": MeshBuilder.KIND_FLAT, "rgb": [9, 9, 9],
+				"indices": [0, 5, 4, 1], "uvs": []}],
+	}
+	var corner_mesh: ArrayMesh = MeshBuilder.build(corner, sharp_bank)
+	var normals: Array[Vector3] = []
+	if corner_mesh.get_surface_count() > 0:
+		var packed: PackedVector3Array = \
+			corner_mesh.surface_get_arrays(0)[Mesh.ARRAY_NORMAL]
+		for normal: Vector3 in packed:
+			var rounded: Vector3 = normal.snappedf(0.001)
+			if not normals.has(rounded):
+				normals.append(rounded)
+	h.equal("normals.faceted", normals.size(), 2,
+		"one per face, none bent across the shared edge")
+
+	# The sun's contract with the lit variants (docs/92 section 7.29): with
+	# no sun up the colour is EMISSION, so light() must add nothing -- the
+	# upgrade screen's fill light drew its soldier a fifth brighter when it
+	# did. The suites draw no frame, so the contract is read off the source.
+	var light_at: int = include.find("void light() {")
+	var light_head: String = include.substr(light_at, 160) \
+		if light_at >= 0 else ""
+	h.check("sun.light_adds_nothing_without_a_sun",
+		light_head.contains("void light() {\n\tif (shadow_strength > 0.0) {"),
+		"light() is one branch on shadow_strength")
+	# Godot refuses `return` in the light processor, and the variant then
+	# fails to compile -- a broken picture no headless suite would notice.
+	var light_body: String = include.substr(light_at) if light_at >= 0 else ""
+	h.check("sun.light_has_no_return", light_at >= 0
+		and not light_body.contains("return"),
+		"a `return` in light() is a shader compile error")
+	h.check("sun.emission_only_without_a_sun", include.contains(
+		"EMISSION = shadow_strength > 0.0 ? vec3(0.0) : ALBEDO;"))
 
 	# The presets, as the named questions every consumer asks.
 	h.equal("graphics.presets",

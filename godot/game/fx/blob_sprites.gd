@@ -50,6 +50,8 @@ var _drawn: int = 0
 ## `atlas` is the `anim` texture of the mission's world set; `document` is
 ## `tables/blobs.json`, which carries the grid the binary was read for.
 func setup(atlas: Texture2D, document: Dictionary = {}) -> void:
+	# Light, not matter: nothing the sun's shadow map should see.
+	cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	var geometry: Dictionary = DictRead.as_dict(document.get("atlas", {}))
 	if not geometry.is_empty():
 		_tile = DictRead.as_int(geometry["tile"])

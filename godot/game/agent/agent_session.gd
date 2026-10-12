@@ -50,6 +50,7 @@ const KEYS: Dictionary[String, int] = {
 	"F5": KEY_F5,
 	"F8": KEY_F8,
 	"F9": KEY_F9,
+	"F10": KEY_F10,
 	"SPACE": KEY_SPACE,
 	"Q": KEY_Q,
 	"E": KEY_E,

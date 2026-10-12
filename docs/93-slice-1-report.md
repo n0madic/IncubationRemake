@@ -802,8 +802,12 @@ Counts after the review: **16 suites, 799 checks**, `movemap_gold --check`
   The draw order sharpened, though: of the kinds the corpus contains, only
   `0x0C` (50 % blend) is order-dependent at all — additive and subtractive
   commute — and while `0x0C` is present in every world-set container (112 faces
-  each), it sits on character-model shadow quads and the `A_CROSS*` aim
-  markers, none of which is inside any converted mission's closure. The cache
+  each), it sits on the Charisma models' muzzle markers (the part `M`, a
+  one-face black triangle -- *corrected 2026-10-12: this said "shadow quads";
+  all 85 `M` parts of the cache's 103 models are that triangle, 0.002 to
+  0.16 m across at the weapon's muzzle, [`92` §7.29](92-remake-architecture.md)*)
+  and the `A_CROSS*` aim markers, none of which is inside any converted
+  mission's closure. The cache
   carries none. Revisit when Charisma models or the aim markers are converted.
 * **`_C_115` is still not native.** Reachability on the lead mission is
   compared against the executable model, which this capture pins. Unchanged.

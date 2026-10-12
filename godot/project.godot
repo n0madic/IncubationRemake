@@ -56,3 +56,7 @@ fx_lights={
 "type": "sampler2D",
 "value": ""
 }
+shadow_strength={
+"type": "float",
+"value": 0.0
+}

@@ -106,6 +106,9 @@ static func create(model: CharismaModel,
 			continue
 		var instance: MeshInstance3D = MeshInstance3D.new()
 		instance.mesh = mesh
+		# Lit by the sun's body light, whose map holds no body -- docs/92
+		# section 7.29.
+		instance.layers = SunShadow.BODY_LAYER
 		# Bone names carry spaces and dots (`Bip01 L Finger0`); Godot node
 		# names may not contain `.`, and a clash would be renamed silently.
 		#

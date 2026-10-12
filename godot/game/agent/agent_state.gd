@@ -64,6 +64,7 @@ func build(frame: int) -> Dictionary:
 		# docs/92 section 7.29: how many effect lights the scene shader reads
 		# now -- the mission's or, while it is up, the campaign map's.
 		"effect_lights": effect_lights(),
+		"sun": sun(),
 		"overlay": overlay(),
 		"camera": camera(),
 		"shell": shell(),
@@ -276,6 +277,19 @@ func effect_lights() -> Dictionary:
 			else backdrop.describe() if backdrop != null else []),
 		"backdrop_live": _main._backdrop_fx.blobs().size()
 			if _main._backdrop_fx != null else -1}
+
+
+## The suns' shadow (docs/92 section 7.29): whether each is drawn, and the
+## strength the shader was last given -- 0 whenever none is, a cutscene
+## included.
+func sun() -> Dictionary:
+	var mission: SunShadow = _main._sun
+	var backdrop: SunShadow = _main._backdrop_sun
+	return {"mission": mission.is_visible_in_tree() if mission != null
+			else false,
+		"backdrop": backdrop.is_visible_in_tree() if backdrop != null
+			else false,
+		"strength": SunShadow.published(_main.get_tree())}
 
 
 ## `live` is every record in use, by kind; `counted` is the sweep's own count

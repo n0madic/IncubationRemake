@@ -100,6 +100,7 @@ func _debug_build_boundary(h: TestHarness) -> void:
 		KEY_F8: SliceMain.DebugKeyAction.LATTICE,
 		KEY_BRACKETRIGHT: SliceMain.DebugKeyAction.NEXT_MISSION,
 		KEY_BRACKETLEFT: SliceMain.DebugKeyAction.PREVIOUS_MISSION,
+		SliceMain.GRAPHICS_CYCLE_KEY: SliceMain.DebugKeyAction.GRAPHICS_CYCLE,
 	}
 	var wrong: PackedStringArray = PackedStringArray()
 	for keycode: int in actions:
@@ -109,7 +110,7 @@ func _debug_build_boundary(h: TestHarness) -> void:
 				!= SliceMain.DebugKeyAction.NONE:
 			wrong.append("release %s" % OS.get_keycode_string(keycode))
 	h.equal("debug_build.hidden_keys_are_build_gated", Array(wrong), [],
-		"F5/F8/F9, Y and both mission-step brackets")
+		"F5/F8/F9/F10, Y and both mission-step brackets")
 	h.equal("debug_build.a_player_key_is_never_a_debug_key",
 		[SliceMain.debug_key_action(KEY_G, true),
 			SliceMain.debug_key_action(KEY_G, false)],

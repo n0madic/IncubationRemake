@@ -220,12 +220,20 @@ func mesh(mesh_name: String) -> ArrayMesh:
 		return _meshes[mesh_name]
 	var built: ArrayMesh = null
 	if _unit_geometry.has(mesh_name):
+		# A body takes the sun's shadow on every face, from a map that holds
+		# no body (docs/92 section 7.29).
 		built = MeshBuilder.build(
-			DictRead.as_dict(_unit_geometry[mesh_name]), _textures)
+			DictRead.as_dict(_unit_geometry[mesh_name]), _textures, true)
 	else:
 		_note_missing(mesh_name)
 	_meshes[mesh_name] = built
 	return built
+
+
+## Move this library's texture bank to the graphics preset `preset`
+## ([method MeshBuilder.set_graphics]); answers how many pages it rewrote.
+func set_graphics(preset: int) -> int:
+	return MeshBuilder.set_graphics(_textures, preset)
 
 
 ## What the cache could not supply, for the status line to say once.

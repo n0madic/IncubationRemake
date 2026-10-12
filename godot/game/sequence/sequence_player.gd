@@ -247,6 +247,16 @@ func _install_part(index: int) -> bool:
 	return _install_shot(0)
 
 
+## Move what is on screen to the graphics preset `preset` -- the open
+## directory's texture bank -- and open every later directory with it. The
+## materials' sampling is [method MeshBuilder.set_sampling]'s, which the
+## caller's walk of the tree reaches.
+func set_graphics(preset: int) -> void:
+	graphics = preset
+	if _library != null:
+		var _rewritten: int = _library.set_graphics(preset)
+
+
 ## One (model, animation) pair: the body, the clip, frame 0, `Cam1`.
 ##
 ## Answers false only when the part has **run out** of pairs, so the caller's

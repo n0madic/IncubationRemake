@@ -87,6 +87,7 @@ func run(h: TestHarness) -> void:
 	_check_diff(h)
 	_check_sprites(h)
 	_check_effect_lights(h)
+	_check_sun_shadow(h)
 	_check_door(h)
 	_check_family(h)
 	_check_family_lever(h)
@@ -767,6 +768,49 @@ func _check_effect_lights(h: TestHarness) -> void:
 	h.equal("lights.halos_do_not_light", lights.lit(), 0,
 		"the table is the light; the halos are drawn on their own")
 	lights.free()
+
+
+
+## SunShadow's global strength (docs/92 section 7.29): the lit variants hold
+## that share of their colour back for the sun to give back, so it may be
+## non-zero only while a sun is drawn -- a cutscene hides the roots the suns
+## stand in, and must come out at full colour.
+func _check_sun_shadow(h: TestHarness) -> void:
+	h.equal("sun.enhanced_only", [GraphicsMode.shadows(GraphicsMode.ORIGINAL),
+		GraphicsMode.shadows(GraphicsMode.SMOOTH),
+		GraphicsMode.shadows(GraphicsMode.ENHANCED)], [false, false, true])
+	# Outside a tree, as the suites run: the rule is over the group's list.
+	var sun: SunShadow = SunShadow.new()
+	var other: SunShadow = SunShadow.new()
+	var suns: Array[Node] = [sun, other]
+	h.equal("sun.off_by_default", SunShadow.strength_among(suns, null), 0.0)
+	sun.set_enabled(true)
+	h.equal("sun.up", SunShadow.strength_among(suns, null), SunShadow.STRENGTH)
+	# A hidden root (a sequence hides the mission's) is `is_visible_in_tree`,
+	# which Godot keeps only inside a tree: the agent's `sun` state shows it.
+	other.set_enabled(true)
+	sun.set_enabled(false)
+	h.equal("sun.one_drawn_is_enough", SunShadow.strength_among(suns, null),
+		SunShadow.STRENGTH)
+	h.equal("sun.leaving_does_not_count", SunShadow.strength_among(suns,
+		other), 0.0, "a sun on its way out of the tree hands back 0")
+	h.check("sun.casts", sun.shadow_enabled
+		and sun.directional_shadow_mode
+			== DirectionalLight3D.SHADOW_ORTHOGONAL)
+	# Bodies are lit apart, from a map that holds no body: a body in a wall's
+	# shadow darkens and is never shaded by its own limbs.
+	var on_bodies: DirectionalLight3D = sun.get_node("SunOnBodies")
+	h.equal("sun.two_lights", [sun.light_cull_mask & SunShadow.BODY_LAYER,
+		on_bodies.light_cull_mask, on_bodies.shadow_caster_mask
+			& SunShadow.BODY_LAYER, on_bodies.shadow_enabled],
+		[0, SunShadow.BODY_LAYER, 0, true])
+	var fill: DirectionalLight3D = SunShadow.fill()
+	h.check("sun.fill_has_no_map", not fill.shadow_enabled
+		and fill.basis.is_equal_approx(sun.basis),
+		"the same direction, for a world of its own")
+	fill.free()
+	other.free()
+	sun.free()
 
 
 func _check_sprites(h: TestHarness) -> void:

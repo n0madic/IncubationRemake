@@ -3196,8 +3196,146 @@ them exact.
 left them out on a reason that did not hold (see the correction there);
 `BlobSprites.set_sampling` switches their material, without mipmaps.
 
+**Close up, the enhanced read keeps texels square** (2026-10-12, after
+play). A plain bilinear blend across a magnified texel smeared a rocket
+pod's few texels of painted light and dark into a flat plane that only the
+nearest read kept. The mipmapped read now goes through `sharpened()` in
+`scene.gdshaderinc`: the blend between two texels is narrowed to 0.35 of a
+texel around their edge (`SHARP_EDGE`), never under one screen pixel, so a
+magnified texel holds its own colour with a short ramp to the next; where a
+texel covers a screen pixel or less the ramp is the whole texel and the read
+is the plain one. The *smooth* preset keeps plain bilinear.
+
 **MSAA 4x** is the *enhanced* preset's, on the root viewport. FXAA and TAA
 do not exist in the Compatibility renderer.
+
+**The sun's shadow -- *enhanced* only** (2026-10-12). `SunShadow`
+(`game/fx/sun_shadow.gd`) is a `DirectionalLight3D` with an orthogonal
+shadow map over 60 m, beside each effect cloud. The original draws no shadow
+at run time. The one-face `0x0C` prototypes the Charisma models carry are
+not drop shadows: **85 of the cache's 103 models have a part `M`, and all 85
+`M` meshes are a single black `0x0C` triangle**, 0.002 to 0.16 m across, at
+the weapon's muzzle -- the part the tracer creators look up by name
+([`28`](28-effects-and-sound.md)). The one other `0x0C` prototype in
+`geometry/units.json`, `PC_012_M__`, is green and no model's `M` (86 in all,
+counted over `models/*.json` and `geometry/units.json`, 2026-10-12). Nothing
+else in the data casts a shadow. So this is the remake's own, and it is
+built so it cannot touch the baked light:
+
+* **Only darkening.** The opaque, colour-keyed and flat variants are no longer
+  `unshaded` but `ambient_light_disabled, specular_disabled`. With no sun up
+  their colour is EMISSION. With one up EMISSION is 0 and `light()` draws the
+  whole colour, as the diffuse that stores `colour * f`, where `f` is 1 where
+  the shadow map sees the sun and `1 - share` in shadow. Lit ground is the
+  page to the bit (with `f` forced to 1, `_C_141` is pixel-identical to the
+  no-sun picture, colour-keyed faces included). Any light reaching a lit face
+  while no sun is up adds nothing: `light()` is one branch on
+  `shadow_strength`, because the upgrade screen's fill light otherwise drew
+  its soldier a fifth brighter under the original preset (mean 92 against
+  76, 2026-10-12, found in review). The branch is written without `return`:
+  **Godot refuses `return` in the light processor**, the variant then fails
+  to compile, and no headless suite sees it -- `test_mesh` reads the source
+  for both.
+* **Only a face turned to the sun takes a shadow.** The first cut also
+  darkened every face turned away from the sun (a terminator on `N.L`), as
+  its own shadow: a whole wall facing the camera went dark and lost its
+  painted detail (`_C_166`, after play, 2026-10-12), and a body's flat faces
+  shaded into a patchwork. Now a face turned away keeps its colour, and the
+  shadow fades in over `N.L` 0.05 to 0.25, where the map's self-shadowing
+  would otherwise show as acne. What remains is the shadow cast on floors,
+  roofs and ledges: `_C_166`'s mean drops 5 %, `_C_141`'s 3 %.
+* **Why the whole colour goes through the sun.** Two first tries failed on
+  measurement. Negative diffuse is **clamped to zero** (`DIFFUSE_LIGHT -= 0.5`
+  changed no pixel). Then holding a share back in EMISSION for the sun to give
+  back drew lit mid-tones brighter than the page: the Compatibility renderer
+  draws the directional light in a pass of its own and **lights in linear
+  light**: `light()` sees ALBEDO decoded, `dec(c)` for a page colour `c`, and
+  what it adds is stored as `enc(dec(c) * diffuse)` -- a diffuse of 0.5 alone
+  turns a stored 80 into 56 and 40 into 26, and 1.0 alone gives the colour
+  back exactly. So `light()` re-encodes ALBEDO to `c` and adds
+  `dec(c * f) / dec(c)`, which is 1 where `f` is. Measured with `f` forced to
+  0.5: 89 % of `_C_141`'s channel samples store 0.49 to 0.51 of the page, and
+  what does not is the 2D status line drawn over it -- the colour-keyed faces
+  darken exactly as the opaque ones. **An earlier cut divided by
+  `dec(ALBEDO)`, decoding twice**: it stored about 0.68 of the page at `f` =
+  0.5 and read the share's luma off linear light, so the shadows the
+  constants below were tuned against were weaker than the constants said.
+* **The share falls on dark colours.** Full shadow takes `shadow_strength`
+  (0.55) of a colour whose stored luma is 0.8 or more, and 0.3 of that up to
+  luma 0.25, smoothly between: the mission levels' median is about 0.09 and
+  they are already in their painted gloom. Tuned after play (2026-10-12): the
+  first cut, a flat 0.45 with the brightening above on the lit side, made
+  dark levels gloomier still. The curve was then refitted once the double
+  decode above was found, to the darkening play had settled on -- about a
+  sixth on dark and mid tones, half on bright ones; `_C_141`'s mean drop is
+  2.0 % before and 1.9 % after, `_C_140`'s 3.2 % and 2.6 %.
+* **Bodies take the scene's shadow and not their own.** A Charisma body is a
+  few dozen flat faces, and shaded per face -- by the terminator, or by its
+  own arm and chest in the map -- it broke into a patchwork. The sun is two
+  lights: `SunShadow` lights every layer but `SunShadow.BODY_LAYER` (visual
+  layer 2, which `CharismaBody` puts its parts on), and everything casts into
+  its map, bodies included, so a soldier's shadow falls on the floor; its
+  child `SunOnBodies` lights only that layer, with `shadow_caster_mask` set to
+  the scene's layers, so a body standing in a wall's shadow darkens evenly
+  and nothing on it is its own shadow. A body's lit faces take the shadow on
+  every face, not only those turned to the sun: `CharismaLibrary` builds them
+  with `body` true, which writes `MeshBuilder.SUN_ALL_FACES` into their
+  vertex alpha (no lit variant reads COLOR's alpha; the blended ones keep
+  theirs). The cost is a second shadow pass, kept to 40 m from the camera
+  (`SunShadow.BODY_MAX_DISTANCE`; a body past that is a few pixels tall).
+  **Not an `instance uniform`**:
+  the Compatibility renderer gives every instance of the shader a slot in a
+  4096-entry buffer whether it sets the value or not, and a mission's scenery
+  overflowed it -- `Too many instances using shader instance variables`, and
+  no shadow drawn at all.
+* **Flat normals, and Godot's default bias.** The meshes were built with
+  `SurfaceTool.generate_normals` smoothing across shared corners, so a wall's
+  front bent towards its top over its whole height. Twice wrong for the sun:
+  on `_C_166` the top of a front -- a strip of painted lamps -- counted as
+  turned to the sun and took the shadow of the wall's top face, and the lamps
+  lost their white cores (bright colours take the largest share); and the
+  map's normal offset pushed along the bent normal, which with a bias of 0.04
+  / normal bias 1.0 hatched sun-facing walls with fine diagonal acne (A/B on
+  the same frame with the shadow term off: the hatching is the shadow's).
+  `MeshBuilder` now builds every surface in smooth group -1 (faceted
+  normals), and the sun uses Godot's own defaults, bias 0.1 and normal bias
+  2.0; crates' contact shadows on `_C_141` stay attached.
+* **The strength is 0 unless a sun is drawn.** A held-back share with no
+  light to give it back is simply darker, and a cutscene hides the roots the
+  suns stand in, so each sun republishes on every visibility change:
+  `SunShadow.STRENGTH` while any sun in the group is visible in the tree, 0
+  otherwise. Since EMISSION is 0 while it is up, a lit material in a world
+  with no light would be **black**, not merely darker. `/state`'s `sun`
+  reports what was published (the root's `sun_shadow_strength` meta): 0.55
+  in a mission, 0 during `sequence 1`, 0.55 again after it. The upgrade
+  screen's soldier stands in a world of its own; `SunShadow.fill()` puts a
+  shadowless light there in the same direction, or the body would be drawn
+  black -- and `test_isolation` fails any script under `game/` that sets
+  `own_world_3d = true` without it. Only one sun may be up: the mission and
+  the campaign map each keep one and are never drawn together, a sequence
+  shows again only the roots it hid, and `SunShadow` warns if two are up
+  (both would light the one world and every face twice).
+* **Measured:** with the lit variants in place and no sun, all three presets
+  are pixel-identical to the unshaded build on `_C_141`.
+* **The sun stands high**, 65 degrees above the horizon at a fixed azimuth:
+  nothing records where the baked light comes from, so long shadows would
+  argue with the painted ones. Effect sprites and halos cast none.
+
+The cost is the shadow pass and the sun's own pass: the lit geometry is drawn
+into the map and again for the light on every frame the preset is
+*enhanced*. Not yet measured on a phone.
+
+**A temporary key, F10**, steps the preset in play and names it on the HUD's
+caption line while the HUD is drawn (`SliceMain.GRAPHICS_CYCLE_KEY`, marked
+TODO), so the presets can be judged against each other on the same frame. It
+is a debug build's key -- `DebugKeyAction.GRAPHICS_CYCLE`, so the suite that
+proves every debug key inert in release covers it -- and it goes once the
+tuning is settled. It is read in `SliceMain._input`, ahead of every screen:
+a cutscene, the splash and the credits end on any key in their own
+`_unhandled_input`, which runs before the main node's. `apply_graphics`
+moves a playing cutscene's own texture bank too (`SequencePlayer
+.set_graphics`) -- that bank is not in the mission's cache, so before this a
+preset changed mid-sequence reached its sampling but not its colour depth.
 
 ---
 
@@ -3369,6 +3507,21 @@ Open about the picture (§7.25, 2026-09-22):
   Compatibility driver compiles the material's shader at the first draw. A
   warm-up at mission load would have to draw every model the world set
   carries, not merely assemble it; not done, the cost being one frame once.
+
+Open about the *enhanced* preset (§7.29, 2026-10-12):
+
+* **The sun's cost on a phone is unmeasured.** The preset draws the scene
+  into two directional shadow maps (the scene's and the bodies', which share
+  the directional shadow atlas) and again in the sun's own light pass, with
+  MSAA 4x on top. Only this host was exercised.
+* **Colour-keyed faces' shadow is calibrated on the opaque pass.** `light()`'s
+  sRGB conversion was measured on opaque faces, whose sun is a separate
+  additive pass. The masked variants are drawn in the alpha pass; their lit
+  side was checked to the bit and their shadowed side against the opaque
+  faces' darkening (§7.29), on `_C_141` only.
+* **The sun's direction is invented.** Nothing in the data says where the
+  baked light comes from; 65 degrees up at a fixed azimuth is a choice that
+  keeps shadows short, not a finding.
 
 ---
 

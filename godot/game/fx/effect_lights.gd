@@ -64,6 +64,8 @@ var _count: int = -1
 ## `atlas` is the decoded `anim` page (the bank's PNG, not a texture read back
 ## from the renderer); `document` is `tables/blobs.json`, as for [BlobSprites].
 func setup(atlas: Image, document: Dictionary = {}) -> void:
+	# Light, not matter: nothing the sun's shadow map should see.
+	cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	var geometry: Dictionary = DictRead.as_dict(document.get("atlas", {}))
 	if not geometry.is_empty():
 		_tile = DictRead.as_int(geometry["tile"])
