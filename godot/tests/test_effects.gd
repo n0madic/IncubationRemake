@@ -4061,16 +4061,15 @@ func _check_models(h: TestHarness) -> void:
 	if blood_node != null:
 		blood_body = blood_node.get_node_or_null(MeshBuilder.BODY_NODE) \
 			as MeshInstance3D
-	var blood_material: StandardMaterial3D = null
+	var blood_material: Material = null
 	if blood_body != null and blood_body.mesh != null \
 			and blood_body.mesh.get_surface_count() > 0:
-		blood_material = blood_body.mesh.surface_get_material(0) \
-			as StandardMaterial3D
+		blood_material = blood_body.mesh.surface_get_material(0)
 	h.check("models.blood_card_is_built", blood_placed
 		and blood_material != null, "A_BLUT4 must reach an actual mesh surface")
 	h.equal("models.blood_card_visible_from_both_camera_sides",
-		blood_material.cull_mode if blood_material != null else -1,
-		BaseMaterial3D.CULL_DISABLED,
+		MeshBuilder.variant_of(blood_material),
+		MeshBuilder.VARIANT_MASKED_DOUBLE,
 		"the thirty-record stab effect must not render as an empty death")
 	pool.clear()
 	h.equal("models.cleared", models.rebuild(pool), 0)

@@ -224,8 +224,6 @@ func _build(name: String) -> Node3D:
 			MeshBuilder.BODY_NODE) as MeshInstance3D
 		if body != null and body.mesh != null:
 			for surface: int in range(body.mesh.get_surface_count()):
-				var material: StandardMaterial3D = \
-					body.mesh.surface_get_material(surface) as StandardMaterial3D
-				if material != null:
-					material.cull_mode = BaseMaterial3D.CULL_DISABLED
+				var _switched: bool = MeshBuilder.double_sided(
+					body.mesh.surface_get_material(surface))
 	return node

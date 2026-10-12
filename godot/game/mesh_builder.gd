@@ -56,9 +56,6 @@ const DRAWS_NOTHING: Array[int] = [KIND_NONE]
 
 ## `0x004089BB` -- an exact half-and-half RGB565 blend.
 const BLEND_ALPHA: float = 0.5
-## The colour key of the masked kind is RGB565 `0x0000`, which is pure black
-## after the 5-6-5 expansion the converter does.
-const KEY_CUTOFF: float = 0.5
 
 const NO_TEXTURE: int = -1
 
@@ -118,6 +115,18 @@ const KEY_LIMIT_6: int = 4
 ## The meta every material [method material_for] gives a texture carries, so
 ## [method set_smooth] can find them among everything else a tree holds.
 const SMOOTHABLE_META: StringName = &"mesh_builder_texture"
+## Where the scene material's variants live, one file per draw-kind class.
+const SHADER_DIR: String = "res://game/shaders/scene_"
+## The CUSTOM channel that carries [method face_rect].
+const FACE_RECT_CHANNEL: int = 0
+const SHADER_SUFFIX: String = ".gdshader"
+const VARIANT_OPAQUE: String = "opaque"
+const VARIANT_MASKED: String = "masked"
+const VARIANT_MASKED_DOUBLE: String = "masked_double"
+const VARIANT_ADD: String = "add"
+const VARIANT_SUB: String = "sub"
+const VARIANT_FLAT: String = "flat"
+const VARIANT_FLAT_BLEND: String = "flat_blend"
 
 ## The key a face of the **shared unit geometry** carries instead of `texture`.
 ##
@@ -332,6 +341,9 @@ static func _surface(vertices: Array, faces: Array, kind: int, texture: int,
 		textures: Dictionary, into: ArrayMesh) -> void:
 	var tool: SurfaceTool = SurfaceTool.new()
 	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
+	# Each vertex carries its face's rectangle on the page, which the
+	# mipmapped read stays inside (`scene.gdshaderinc`).
+	tool.set_custom_format(FACE_RECT_CHANNEL, SurfaceTool.CUSTOM_RGBA_FLOAT)
 	var emitted: int = 0
 	var curve: PackedByteArray = DictRead.as_byte_array(
 		textures.get(CURVE, PackedByteArray()))
@@ -358,12 +370,17 @@ static func _surface(vertices: Array, faces: Array, kind: int, texture: int,
 		var overdraw: int = DictRead.as_int(face.get(OVERDRAW, 0))
 		if overdraw > 0:
 			points = receded(points, overdraw)
+		var corners: PackedVector2Array = PackedVector2Array()
+		for pair_entry: Variant in uvs:
+			var pair: Array = DictRead.as_array(pair_entry)
+			corners.append(WorldSpace.uv(DictRead.as_int(pair[0]),
+				DictRead.as_int(pair[1])))
+		var rect: Color = face_rect(corners)
 		for corner: int in triangulate(points):
 			tool.set_color(colour)
-			if corner < uvs.size():
-				var pair: Array = DictRead.as_array(uvs[corner])
-				tool.set_uv(WorldSpace.uv(DictRead.as_int(pair[0]),
-					DictRead.as_int(pair[1])))
+			tool.set_custom(FACE_RECT_CHANNEL, rect)
+			if corner < corners.size():
+				tool.set_uv(corners[corner])
 			tool.add_vertex(points[corner])
 			emitted += 1
 	if emitted == 0:
@@ -492,7 +509,41 @@ static func fan(count: int) -> PackedInt32Array:
 	return out
 
 
-## docs/31 section 4.4, transcribed into Godot's material.
+## docs/31 section 4.4, transcribed into the remake's own material: one of the
+## `game/shaders/scene_*.gdshader` variants, whose `render_mode` line carries
+## what Godot fixes at compile time -- blending, culling, depth writing -- and
+## whose uniforms carry the page and how it is read ([method set_sampling]).
+##
+## **Unshaded**: the original bakes its light into the pages and the face
+## colours, so no Godot light is read.
+##
+## **One-sided, the way the engine draws them.** docs/31 section 4.2: every
+## face names a plane, and the leaf walker (`Eng3d.dll` `0x405203`..
+## `0x405230`) draws it only when `plane_value - plane_d < 0`. `plane_value`
+## is the plane normal dotted with the object's position **minus the
+## camera's** (`0x404BF4` subtracts the camera, `0x4050C4` hands the rotated
+## vector to the prototype) and `plane_d` is `-n.v/16384` on the corpus, so
+## the test is `n . (vertex - camera) < 0`: the face is drawn when the camera
+## is on the side its normal points to. The stored winding's Newell normal is
+## **against** the plane normal on 236 160 of 236 861 shipped faces (700 have
+## no area, one is a near-degenerate sliver), which under Godot's clockwise
+## front face puts the visible side in front -- so the indices are used as
+## they come and the back face is culled. `prototyp_parse.py --check` pins
+## every number in this paragraph.
+##
+## **Only the flat kinds read the face colour.** docs/31 section 4.4 lists the
+## textured kinds' shading as "none (decal)": the engine samples the texture
+## and never looks at `colour`, which is `0x0000` on most textured faces and a
+## real grey on the rest. Multiplying it in darkened every textured surface --
+## 0.48x in `World_A00`, 0.29x in `World_D00` -- or blacked it out where the
+## field is zero.
+##
+## The deferred kinds are drawn after everything opaque and without writing
+## depth (`grDepthMask(0)` in the Glide build): the 50 % flat fill is `dst/2 +
+## colour/2` exactly, an alpha of one half riding on the vertex colour; the
+## colour key is `if (texel == 0) skip pixel`, a scissor and not a blend; the
+## additive and subtractive kinds saturate per channel, and a black texel is
+## self-neutral under either, so they need no key.
 ##
 ## One deliberate deviation: Godot depth-sorts transparent surfaces. The
 ## original software path first made a camera-dependent BSP walk and then
@@ -502,102 +553,82 @@ static func fan(count: int) -> PackedInt32Array:
 ## ordering between objects. Exact overlap parity needs per-frame global
 ## ordering (or a custom renderer), not a fixed import-time face order.
 static func material_for(kind: int, texture: int,
-		textures: Dictionary) -> StandardMaterial3D:
-	var material: StandardMaterial3D = StandardMaterial3D.new()
-	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	apply_sampling(material, DictRead.as_int(textures.get(SAMPLING,
-		GraphicsMode.SAMPLING_NEAREST)))
-	# **One-sided, the way the engine draws them.** docs/31 section 4.2: every
-	# face names a plane, and the leaf walker (`Eng3d.dll` `0x405203`..
-	# `0x405230`) draws it only when `plane_value - plane_d < 0`. `plane_value`
-	# is the plane normal dotted with the object's position **minus the
-	# camera's** (`0x404BF4` subtracts the camera, `0x4050C4` hands the rotated
-	# vector to the prototype) and `plane_d` is `-n.v/16384` on the corpus, so
-	# the test is `n . (vertex - camera) < 0`: the face is drawn when the camera
-	# is on the side its normal points to. The stored winding's Newell normal is
-	# **against** the plane normal on 236 160 of 236 861 shipped faces (700 have
-	# no area, one is a near-degenerate sliver), which under Godot's clockwise
-	# front face puts the visible side in front -- so the indices are used as
-	# they come and the back face is culled. `prototyp_parse.py --check` pins
-	# every number in this paragraph.
-	material.cull_mode = BaseMaterial3D.CULL_BACK
-	# **Only the flat kinds read the face colour.**  docs/31 section 4.4 lists
-	# the textured kinds' shading as "none (decal)": the engine samples the
-	# texture and never looks at `colour`, which is `0x0000` on most textured
-	# faces and a real grey on the rest.  Letting Godot multiply it in darkens
-	# every textured surface -- 0.48x in `World_A00`, 0.29x in `World_D00` --
-	# or blacks it out entirely where the field is zero.
-	material.vertex_color_use_as_albedo = texture == NO_TEXTURE
-	# The palette entry is an sRGB value.  Forward+ and Mobile read a vertex
-	# colour as linear unless told otherwise; the flag is inert under
-	# gl_compatibility, which the project renders with, and is set so the
-	# face colour means the same thing under any renderer (docs/92 section
-	# 7.25 -- the terrain overlay, which takes the same path, washed out
-	# under Mobile before it was set).
-	material.vertex_color_is_srgb = true
-
+		textures: Dictionary) -> ShaderMaterial:
+	var material: ShaderMaterial = ShaderMaterial.new()
+	material.shader = load(SHADER_DIR + _variant(kind) + SHADER_SUFFIX)
+	material.set_shader_parameter(&"sampling", DictRead.as_int(
+		textures.get(SAMPLING, GraphicsMode.SAMPLING_NEAREST)))
 	var image: Texture2D = null
-	if texture != NO_TEXTURE:
+	if texture != NO_TEXTURE and not FLAT_KINDS.has(kind):
 		image = keyed_texture(textures, texture) \
 			if kind == KIND_TEXTURE_MASKED else plain_texture(textures, texture)
 	if image != null:
-		material.albedo_texture = image
+		material.set_shader_parameter(&"page", image)
 		material.set_meta(SMOOTHABLE_META, true)
-
-	match kind:
-		KIND_FLAT_BLEND:
-			# 50 % translucent flat fill: `dst/2 + colour/2` exactly, which is
-			# an alpha of one half over MIX.  The alpha itself rides on the
-			# vertex colour, set in `_surface`.
-			material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-			material.blend_mode = BaseMaterial3D.BLEND_MODE_MIX
-		KIND_TEXTURE_MASKED:
-			# Colour-keyed: `if (texel == 0) skip pixel`.  A scissor, not a
-			# blend -- the kept pixels are fully opaque.
-			material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
-			material.alpha_scissor_threshold = KEY_CUTOFF
-		KIND_TEXTURE_ADD:
-			# Saturating per-channel add.  A black texel is self-neutral under
-			# addition, so the key needs no alpha channel here.
-			material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-			material.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
-		KIND_TEXTURE_SUB:
-			material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-			material.blend_mode = BaseMaterial3D.BLEND_MODE_SUB
-		_:
-			material.transparency = BaseMaterial3D.TRANSPARENCY_DISABLED
-			material.blend_mode = BaseMaterial3D.BLEND_MODE_MIX
-	if DEFERRED_KINDS.has(kind):
-		# The engine draws these after everything opaque and with the depth
-		# buffer write disabled (`grDepthMask(0)` in the Glide build).
-		material.depth_draw_mode = BaseMaterial3D.DEPTH_DRAW_DISABLED
 	return material
 
 
-## How a material reads its bank texture -- [constant GraphicsMode.SAMPLING_NEAREST]
-## and the rest, docs/92 section 7.29.
+## Which `scene_*.gdshader` draws `kind`.
+static func _variant(kind: int) -> String:
+	match kind:
+		KIND_FLAT_BLEND:
+			return VARIANT_FLAT_BLEND
+		KIND_TEXTURE_MASKED:
+			return VARIANT_MASKED
+		KIND_TEXTURE_ADD:
+			return VARIANT_ADD
+		KIND_TEXTURE_SUB:
+			return VARIANT_SUB
+	return VARIANT_FLAT if FLAT_KINDS.has(kind) else VARIANT_OPAQUE
+
+
+## A face's `(u0, v0, u1, v1)` on its page, as the colour channels of CUSTOM0;
+## a face with no coordinates gets the whole page.
+static func face_rect(corners: PackedVector2Array) -> Color:
+	if corners.is_empty():
+		return Color(0.0, 0.0, 1.0, 1.0)
+	var low: Vector2 = corners[0]
+	var high: Vector2 = corners[0]
+	for at: Vector2 in corners:
+		low = low.min(at)
+		high = high.max(at)
+	return Color(low.x, low.y, high.x, high.y)
+
+
+## The variant name of a material [method material_for] made -- `"opaque"`,
+## `"masked"`, ... -- or empty for any other.
+static func variant_of(material: Material) -> String:
+	var shader_material: ShaderMaterial = material as ShaderMaterial
+	if shader_material == null or shader_material.shader == null:
+		return ""
+	var path: String = shader_material.shader.resource_path
+	if not path.begins_with(SHADER_DIR):
+		return ""
+	return path.trim_prefix(SHADER_DIR).trim_suffix(SHADER_SUFFIX)
+
+
+## `material` drawn from both sides -- what [BlobModels] asks for the A_BLUT
+## splats. Only the colour-keyed kind has a two-sided variant, because it is
+## the only kind those models use (27 faces, all `0x14`). Returns whether the
+## material was switched.
+static func double_sided(material: Material) -> bool:
+	var shader_material: ShaderMaterial = material as ShaderMaterial
+	if variant_of(shader_material) != VARIANT_MASKED:
+		return false
+	shader_material.shader = load(SHADER_DIR + VARIANT_MASKED_DOUBLE
+		+ SHADER_SUFFIX)
+	return true
+
+
+## Switch every bank-textured material under `root` to `sampling` --
+## [constant GraphicsMode.SAMPLING_NEAREST] and the rest, docs/92 section 7.29.
 ##
 ## **Nearest** is what both shipped renderers do by default, wrapping mod 256.
 ## **Linear** is bilinear with the coordinates clamped and no mipmaps, the
 ## texture state `ENG3DFX.DLL` hands Glide (docs/31 section 4.8) -- the
 ## remake's own option, not the accelerated build's picture, which has never
-## been observed. Clamping changes nothing a face can reach: every shipped
-## `(u, v)` lies inside its page.
-static func apply_sampling(material: BaseMaterial3D, sampling: int) -> void:
-	match sampling:
-		GraphicsMode.SAMPLING_LINEAR:
-			material.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR
-			material.texture_repeat = false
-		GraphicsMode.SAMPLING_MIPMAPPED:
-			material.texture_filter = \
-				BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS_ANISOTROPIC
-			material.texture_repeat = false
-		_:
-			material.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
-			material.texture_repeat = true
-
-
-## Switch every bank-textured material under `root` to `sampling`.
+## been observed. **Mipmapped** is anisotropic and held inside each face's own
+## rectangle of the atlas (`scene.gdshaderinc`).
 ##
 ## The materials are built once per scene, so a change made on the options
 ## screen has to reach the ones already on screen; the banks' own [constant
@@ -616,11 +647,11 @@ static func set_sampling(root: Node, sampling: int) -> int:
 		if instance == null or instance.mesh == null:
 			continue
 		for surface: int in range(instance.mesh.get_surface_count()):
-			var material: BaseMaterial3D = \
-				instance.mesh.surface_get_material(surface) as BaseMaterial3D
+			var material: ShaderMaterial = \
+				instance.mesh.surface_get_material(surface) as ShaderMaterial
 			if material == null or not material.has_meta(SMOOTHABLE_META):
 				continue
-			apply_sampling(material, sampling)
+			material.set_shader_parameter(&"sampling", sampling)
 			changed += 1
 	return changed
 

@@ -103,9 +103,8 @@ func _check_triangulation(h: TestHarness) -> void:
 ## outline is laid in all three planes, facing both ways, wound both ways.
 func _check_winding(h: TestHarness) -> void:
 	var textures: Dictionary = {MeshBuilder.PLAIN: {}, MeshBuilder.KEYED: {}}
-	h.equal("side.back_face_culled", MeshBuilder.material_for(
-		MeshBuilder.KIND_TEXTURE_PERSP, 0, textures).cull_mode,
-		BaseMaterial3D.CULL_BACK,
+	h.check("side.back_face_culled", _render_mode(MeshBuilder.material_for(
+		MeshBuilder.KIND_TEXTURE_PERSP, 0, textures)).has("cull_back"),
 		"Eng3d.dll 0x405203..0x405230 draws a face from one side only")
 	var flips: int = 0
 	for axis: int in range(3):
@@ -177,46 +176,61 @@ static func _all_with(points: PackedVector3Array, triangles: PackedInt32Array,
 
 func _check_draw_kinds(h: TestHarness) -> void:
 	var textures: Dictionary = {MeshBuilder.PLAIN: {}, MeshBuilder.KEYED: {}}
-	var opaque: StandardMaterial3D = MeshBuilder.material_for(
+	# docs/92 section 7.29: each kind is a `scene_*.gdshader` variant, and
+	# what Godot fixes at compile time is on its `render_mode` line.
+	var opaque: ShaderMaterial = MeshBuilder.material_for(
 		MeshBuilder.KIND_TEXTURE_PERSP, 0, textures)
-	h.equal("kind.10.transparency", opaque.transparency,
-		BaseMaterial3D.TRANSPARENCY_DISABLED, "the dominant kind is opaque")
-	h.equal("kind.10.depth", opaque.depth_draw_mode,
-		BaseMaterial3D.DEPTH_DRAW_OPAQUE_ONLY)
-	h.equal("kind.all.unshaded", opaque.shading_mode,
-		BaseMaterial3D.SHADING_MODE_UNSHADED,
+	h.equal("kind.10.variant", MeshBuilder.variant_of(opaque),
+		MeshBuilder.VARIANT_OPAQUE, "the dominant kind is opaque")
+	h.check("kind.10.depth", _render_mode(opaque).has("depth_draw_opaque")
+		and not _defines(opaque).has("TRANSLUCENT"))
+	var unlit: Array[String] = []
+	for variant: String in [MeshBuilder.VARIANT_OPAQUE,
+			MeshBuilder.VARIANT_MASKED, MeshBuilder.VARIANT_MASKED_DOUBLE,
+			MeshBuilder.VARIANT_ADD, MeshBuilder.VARIANT_SUB,
+			MeshBuilder.VARIANT_FLAT, MeshBuilder.VARIANT_FLAT_BLEND]:
+		var shader: Shader = load(MeshBuilder.SHADER_DIR + variant
+			+ MeshBuilder.SHADER_SUFFIX)
+		if shader != null and _mode_of(shader.code).has("unshaded"):
+			unlit.append(variant)
+	h.equal("kind.all.unshaded", unlit.size(), 7,
 		"the original bakes its light in, so any Godot light is infidelity")
 	# docs/31 section 4.4 lists the textured kinds' shading as "none (decal)":
 	# the face colour is not read for them.  Multiplying it in darkened every
 	# textured surface -- `World_A00` carries (123,125,123) on its textured
 	# faces, which is 0.48x -- and blacked out the ones whose colour is 0.
-	h.equal("kind.textured.ignores_face_colour",
-		opaque.vertex_color_use_as_albedo, false)
-	h.equal("kind.flat.uses_face_colour", MeshBuilder.material_for(
-		MeshBuilder.KIND_FLAT, MeshBuilder.NO_TEXTURE,
-		textures).vertex_color_use_as_albedo, true,
+	h.check("kind.textured.ignores_face_colour",
+		_defines(opaque).has("TEXTURED"), "TEXTURED paints the page alone")
+	var flat: ShaderMaterial = MeshBuilder.material_for(
+		MeshBuilder.KIND_FLAT, MeshBuilder.NO_TEXTURE, textures)
+	h.check("kind.flat.uses_face_colour",
+		MeshBuilder.variant_of(flat) == MeshBuilder.VARIANT_FLAT
+		and not _defines(flat).has("TEXTURED"),
 		"the flat kinds are the only ones that paint it")
 
-	var blend: StandardMaterial3D = MeshBuilder.material_for(
+	var blend: ShaderMaterial = MeshBuilder.material_for(
 		MeshBuilder.KIND_FLAT_BLEND, -1, textures)
-	h.equal("kind.0c.blend", blend.blend_mode, BaseMaterial3D.BLEND_MODE_MIX)
-	h.equal("kind.0c.transparency", blend.transparency,
-		BaseMaterial3D.TRANSPARENCY_ALPHA, "dst/2 + colour/2 is alpha one half")
-	h.equal("kind.0c.depth", blend.depth_draw_mode,
-		BaseMaterial3D.DEPTH_DRAW_DISABLED, "deferred, and grDepthMask(0)")
+	h.check("kind.0c.blend", _render_mode(blend).has("blend_mix")
+		and _defines(blend).has("TRANSLUCENT"),
+		"dst/2 + colour/2 is alpha one half")
+	h.check("kind.0c.depth", _render_mode(blend).has("depth_draw_never"),
+		"deferred, and grDepthMask(0)")
 
-	var masked: StandardMaterial3D = MeshBuilder.material_for(
+	var masked: ShaderMaterial = MeshBuilder.material_for(
 		MeshBuilder.KIND_TEXTURE_MASKED, 0, textures)
-	h.equal("kind.14.transparency", masked.transparency,
-		BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR,
+	h.check("kind.14.scissor", _defines(masked).has("MASKED")
+		and not _defines(masked).has("TRANSLUCENT"),
 		"a colour key is a scissor, not a blend")
 
-	h.equal("kind.1c.blend", MeshBuilder.material_for(
-		MeshBuilder.KIND_TEXTURE_ADD, 0, textures).blend_mode,
-		BaseMaterial3D.BLEND_MODE_ADD)
-	h.equal("kind.20.blend", MeshBuilder.material_for(
-		MeshBuilder.KIND_TEXTURE_SUB, 0, textures).blend_mode,
-		BaseMaterial3D.BLEND_MODE_SUB)
+	h.check("kind.1c.blend", _render_mode(MeshBuilder.material_for(
+		MeshBuilder.KIND_TEXTURE_ADD, 0, textures)).has("blend_add"))
+	h.check("kind.20.blend", _render_mode(MeshBuilder.material_for(
+		MeshBuilder.KIND_TEXTURE_SUB, 0, textures)).has("blend_sub"))
+	h.check("kind.14.two_sided_on_request",
+		MeshBuilder.double_sided(masked)
+		and _render_mode(masked).has("cull_disabled")
+		and not MeshBuilder.double_sided(opaque),
+		"only the colour-keyed kind has the splats' two-sided variant")
 
 	# The half-dead kind: its textured branch calls a filler pointer the DLL
 	# never sets, so only the flat fallback paints -- which means it must not
@@ -298,20 +312,29 @@ func _check_sampling(h: TestHarness) -> void:
 		Image.create_empty(2, 2, false, Image.FORMAT_RGB8))
 	var sharp_bank: Dictionary = {MeshBuilder.PLAIN: {0: page},
 		MeshBuilder.KEYED: {0: page}}
-	var sharp: StandardMaterial3D = MeshBuilder.material_for(
+	var sharp: ShaderMaterial = MeshBuilder.material_for(
 		MeshBuilder.KIND_TEXTURE_PERSP, 0, sharp_bank)
-	h.equal("sampling.sharp_by_default",
-		[sharp.texture_filter, sharp.texture_repeat],
-		[BaseMaterial3D.TEXTURE_FILTER_NEAREST, true],
-		"the software renderer's nearest texel, wrapping mod 256")
+	h.equal("sampling.nearest_by_default",
+		[sharp.get_shader_parameter(&"sampling"),
+		sharp.get_shader_parameter(&"page") == page],
+		[GraphicsMode.SAMPLING_NEAREST, true],
+		"the software renderer's nearest texel")
 	var smooth_bank: Dictionary = sharp_bank.duplicate()
 	smooth_bank[MeshBuilder.SAMPLING] = GraphicsMode.SAMPLING_LINEAR
-	var smooth: StandardMaterial3D = MeshBuilder.material_for(
+	var smooth: ShaderMaterial = MeshBuilder.material_for(
 		MeshBuilder.KIND_TEXTURE_MASKED, 0, smooth_bank)
-	h.equal("sampling.smooth_is_bilinear_and_clamped",
-		[smooth.texture_filter, smooth.texture_repeat],
-		[BaseMaterial3D.TEXTURE_FILTER_LINEAR, false],
-		"guTexAllocateMemory's state: filter 1/1, clamp 1/1, one LOD")
+	h.equal("sampling.bank_decides_new_materials",
+		smooth.get_shader_parameter(&"sampling"), GraphicsMode.SAMPLING_LINEAR)
+	# **One sampler.** The Compatibility renderer keeps the filter on the
+	# texture object, so a page bound to two differently filtered uniforms is
+	# filtered in both; the texel-by-texel read is `texelFetch` instead.
+	var include: String = FileAccess.get_file_as_string(
+		"res://game/shaders/scene.gdshaderinc")
+	h.check("sampling.one_sampler_state",
+		include.contains("uniform sampler2D page : hint_default_white, "
+			+ "filter_linear_mipmap_anisotropic, repeat_disable;")
+		and include.count("uniform sampler2D") == 1
+		and include.contains("texelFetch(page"))
 
 	var root: Node3D = Node3D.new()
 	var built: MeshInstance3D = MeshInstance3D.new()
@@ -323,23 +346,43 @@ func _check_sampling(h: TestHarness) -> void:
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 	mesh.surface_set_material(0, sharp)
-	var foreign: StandardMaterial3D = StandardMaterial3D.new()
-	foreign.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
+	var foreign: ShaderMaterial = MeshBuilder.material_for(
+		MeshBuilder.KIND_FLAT, MeshBuilder.NO_TEXTURE, sharp_bank)
 	mesh.surface_set_material(1, foreign)
 	built.mesh = mesh
 	root.add_child(built)
 	h.equal("sampling.switch_reaches_only_bank_materials",
-		[MeshBuilder.set_sampling(root, GraphicsMode.SAMPLING_LINEAR),
-		sharp.texture_filter,
-		foreign.texture_filter],
-		[1, BaseMaterial3D.TEXTURE_FILTER_LINEAR,
-		BaseMaterial3D.TEXTURE_FILTER_NEAREST],
-		"the overlay, the markers and the sprites keep their own sampling")
+		[MeshBuilder.set_sampling(root, GraphicsMode.SAMPLING_MIPMAPPED),
+		sharp.get_shader_parameter(&"sampling"),
+		foreign.get_shader_parameter(&"sampling")],
+		[1, GraphicsMode.SAMPLING_MIPMAPPED, GraphicsMode.SAMPLING_NEAREST],
+		"an untextured face has nothing to sample")
 	var _back: int = MeshBuilder.set_sampling(root,
 		GraphicsMode.SAMPLING_NEAREST)
-	h.equal("sampling.switch_back", sharp.texture_filter,
-		BaseMaterial3D.TEXTURE_FILTER_NEAREST)
+	h.equal("sampling.switch_back", sharp.get_shader_parameter(&"sampling"),
+		GraphicsMode.SAMPLING_NEAREST)
 	root.free()
+
+	# Each face carries its own rectangle of the atlas, which the mipmapped
+	# read stays inside.
+	h.equal("rect.of_a_face", MeshBuilder.face_rect(PackedVector2Array([
+		Vector2(0.25, 0.5), Vector2(0.75, 0.125), Vector2(0.5, 0.625)])),
+		Color(0.25, 0.125, 0.75, 0.625))
+	h.equal("rect.of_no_coordinates", MeshBuilder.face_rect(
+		PackedVector2Array()), Color(0.0, 0.0, 1.0, 1.0))
+	var quad: Dictionary = {
+		"vertices": [[0, 0, 0], [1600, 0, 0], [1600, 1600, 0], [0, 1600, 0]],
+		"faces": [{"draw_kind": MeshBuilder.KIND_TEXTURE_PERSP, "texture": 0,
+			"rgb": [0, 0, 0], "indices": [0, 1, 2, 3],
+			"uvs": [[0, 0], [4096, 0], [4096, 8192], [0, 8192]]}],
+	}
+	var quad_mesh: ArrayMesh = MeshBuilder.build(quad, sharp_bank)
+	var custom: PackedFloat32Array = PackedFloat32Array()
+	if quad_mesh.get_surface_count() > 0:
+		custom = quad_mesh.surface_get_arrays(0)[Mesh.ARRAY_CUSTOM0]
+	h.equal("rect.reaches_the_vertices",
+		Array(custom.slice(0, 4)) if custom.size() >= 4 else [],
+		[0.0, 0.0, 0.125, 0.25], "u up to 4096 of 32768, v up to 8192")
 
 	# The presets, as the named questions every consumer asks.
 	h.equal("graphics.presets",
@@ -353,6 +396,34 @@ func _check_sampling(h: TestHarness) -> void:
 		[GraphicsMode.SAMPLING_NEAREST, false, GraphicsMode.SAMPLING_LINEAR,
 		true, false, GraphicsMode.SAMPLING_MIPMAPPED, true])
 	_check_colour_depth(h)
+
+
+## The `render_mode` line of a scene material's variant.
+func _render_mode(material: ShaderMaterial) -> PackedStringArray:
+	return _mode_of(material.shader.code) if material != null \
+		and material.shader != null else PackedStringArray()
+
+
+func _mode_of(code: String) -> PackedStringArray:
+	for line: String in code.split("\n"):
+		if line.begins_with("render_mode "):
+			var out: PackedStringArray = PackedStringArray()
+			for word: String in line.trim_prefix("render_mode ") \
+					.trim_suffix(";").split(","):
+				out.append(word.strip_edges())
+			return out
+	return PackedStringArray()
+
+
+## The `#define`s in front of a variant's include.
+func _defines(material: ShaderMaterial) -> PackedStringArray:
+	var out: PackedStringArray = PackedStringArray()
+	if material == null or material.shader == null:
+		return out
+	for line: String in material.shader.code.split("\n"):
+		if line.begins_with("#define "):
+			out.append(line.trim_prefix("#define ").strip_edges())
+	return out
 
 
 ## docs/92 section 7.29: the cache's page is the exact 24-bit decode, and the

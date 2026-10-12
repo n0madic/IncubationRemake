@@ -3125,6 +3125,40 @@ preset's MSAA. The headless suites cannot see a rewritten pixel -- that
 renderer keeps a texture's first image -- so `depth.bank_rewrites_the_pixels`
 runs only where a real renderer draws.
 
+**The faces are drawn by the remake's own shader.** Mipmaps on an atlas and
+light added to unshaded faces are both things `StandardMaterial3D` cannot do,
+so `MeshBuilder.material_for` hands out a `ShaderMaterial` over one of seven
+`game/shaders/scene_*.gdshader` variants -- opaque, masked, masked
+two-sided (the A_BLUT splats, all `0x14`), add, sub, flat, flat at one half
+-- each a `render_mode` line and a few defines in front of one
+`scene.gdshaderinc`, because blending, culling and depth writing are fixed at
+compile time. The sampling is a uniform, so a preset switch sets it on the
+materials already built (`MeshBuilder.set_sampling`).
+
+**One sampler, and the engine's read through `texelFetch`.** The first
+version bound each page to a nearest and a filtered uniform; the original
+picture came out 1.78 levels off on average, along every texel edge. The
+Compatibility renderer keeps the filter **on the texture object**
+(`Texture::gl_set_filter`), so a page bound twice is filtered in both. Now
+the page has one sampler (`filter_linear_mipmap_anisotropic`, clamped) and
+the texel-by-texel read is `texelFetch` at `floor(uv * 256)` wrapped mod 256,
+which no sampler state touches. Measured: the *original* and *smooth*
+presets through the shader are pixel-identical to `StandardMaterial3D`'s on
+`_C_141` and `_C_154`.
+
+**Mipmaps stay inside each face's rectangle.** Every vertex carries its
+face's `(u0, v0, u1, v1)` in CUSTOM0 (`MeshBuilder.face_rect`); the
+mipmapped read takes the level the screen footprint asks for, capped at 3
+(32-texel tiles) by shrinking the gradients, and holds the sample point one
+texel of that level inside the rectangle, so neither the filter nor the
+chain's own averaging reaches the next tile of the atlas. A colour-keyed
+face keys on the full-size page, or a grille thins away into the distance.
+Anisotropy is the project's `anisotropic_filtering_level` (4x), which the
+Compatibility renderer reads once at start. What remains at a distance is
+averaging, not bleeding: `_C_141`'s far view is softer and its small crates
+lose contrast against the sharp preset, whose crispness there is aliasing
+that shimmers as the camera moves.
+
 ---
 
 ## 8. Standing constraints
