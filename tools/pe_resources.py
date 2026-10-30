@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Dump Win32 PE resources — dialog templates, string tables, menus.
 
-Stdlib only.  Written for the Incubation reverse-engineering work: the level
+Stdlib only.  Written for the Incubation research work: the level
 editor ``iDesigner.exe`` names most of the binary record layouts in its dialog
 resources, and reading those templates is the fastest way to recover an
 authoring-side field name.

@@ -2,7 +2,7 @@
 
 ## What this repository is
 
-Reverse-engineering of the file formats of **Incubation: Time Is Running Out**
+Research of the file formats of **Incubation: Time Is Running Out**
 (Blue Byte, 1997), plus a Godot remake built on the result. It is not one
 application: `docs/` holds the format and behaviour specifications, `tools/`
 holds the Python parsers that prove them, and `godot/` is the remake.

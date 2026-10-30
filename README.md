@@ -1,4 +1,4 @@
-# Incubation — reverse engineering and a Godot remake
+# Incubation — a Godot remake
 
 An open reconstruction of **Incubation: Time Is Running Out** (Blue Byte, 1997)
 and its *Wilderness Missions* add-on:

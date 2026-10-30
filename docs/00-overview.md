@@ -1,6 +1,6 @@
 # Incubation — file format documentation
 
-Reverse-engineering notes for **Incubation: Time Is Running Out** (Blue Byte,
+Research notes for **Incubation: Time Is Running Out** (Blue Byte,
 1997) and its *Wilderness Missions* add-on, produced from the GOG release in
 `gog_incubation/` as groundwork for a remake.
 
