@@ -2,9 +2,9 @@
 
 Four routines called **inside a running `Incubation.exe`**, on mission `_C_141`
 loaded from save slot 6 — the same session
-[`tools/movemap_gold.py`](../../../tools/movemap_gold.py) established and the
+[`tools/movemap_gold.py`](../../tools/movemap_gold.py) established and the
 same anchor inside `aGameIntro` (`Incubation.exe+0x4bd6f`). This is the rank-1
-oracle ([`docs/92`](../../../docs/92-remake-architecture.md) §5) that
+oracle ([`docs/92`](../92-remake-architecture.md) §5) that
 `tools/inclib/turn.py` and `tools/inclib/combat.py` are diffed against.
 
 | Routine | Address | What it pins |
@@ -13,17 +13,17 @@ oracle ([`docs/92`](../../../docs/92-remake-architecture.md) §5) that
 | `aGetUnitFullHeight` / `aGetUnitEyeHeight` | `0x0047AD70` / `0x0047AD30` | the two height helpers vision and fire measure from |
 | `aRefreshPlayer` | `0x004781C0` | what a hand-over restores, diffed field by field over the whole 200-slot unit array |
 | `aCheckLineOfSightEx` | `0x0046C460` | the ray fan and the "keep the smallest" rule, over the same ordered pairs |
-| `aRecomputeStats` | `0x004759B0` | that `+0x15` **is** written — the correction to [`docs/25`](../../../docs/25-turn-and-round.md) §5 |
+| `aRecomputeStats` | `0x004759B0` | that `+0x15` **is** written — the correction to [`docs/25`](../25-turn-and-round.md) §5 |
 | `0x0043B320` + `0x0043B490` | — | twelve steps of the rotation, with the turn state and the twelve game-control slots at `0x00509F18` |
 | `0x0043F6E0` (`aRunLCL`) | — | one `NextPlayer` invocation of the real interpreter, with `aRandom`'s seed read either side |
-| `aCheckWeaponDamage` | `0x0046D1B0` | the overheat gate, the roll's span and its four arms — this is what corrected [`docs/22`](../../../docs/22-combat-and-visibility.md) §8 |
+| `aCheckWeaponDamage` | `0x0046D1B0` | the overheat gate, the roll's span and its four arms — this is what corrected [`docs/22`](../22-combat-and-visibility.md) §8 |
 | `aAttackUnit` | `0x0046B450` | six ordered shots: the hit roll, the damage, the kill, and the overheat roll inside the shot |
 | `aExecuteUse` | `0x0046DC60` | three action-point classes swept over all eight facings — **gated** since S6: `--check` replays all 24 probes through `inclib/interact.py`, in order and without reloading |
 | `aExecuteMove` | `0x0046E220` | six walks of one two-step path, differing only in a byte written **between the walk and the call**: the step costs, the distance, the facing, the delay column, a VictoryPoint and a mine |
 | `aAttackUnit`, `0x0047AD90`, `aExecuteMove` | — | **phase 11, `reveal`** — both parties written hidden through the game's own `memcpy`: a shot reveals shooter and target, a jammed one neither; the human relocated next to the alien through the engine's own `0x0047AD90` reveals it; the alien walking one step with the *Enemy Move* dword written on comes out visible, and written off a **contact** (the promotion inside `0x004794B0`) |
 | `aAttackUnit` | — | **phase 12, `conversion`** — the weapon byte written to 47 and the seed to one that clears its always-at-the-cap overheat roll: the target changes sides and looks around; `+0x3A` written with `+0x33` clear is ignored, with it set one charge is spent and the damage still rolled |
 | `aPlayPlatformSequence` | `0x00412A00` | **phase 13, `platform`** — the human relocated to a clear centre and carried three tiles: position, every cell's height, type and link, the deep hole, and the rider's pass from the new cell |
-| `aGenerateUnitElement` | `0x00479CF0` | **phase 15, `spawn`** — a computer `Ray'Ther` spawned on (14,6) in five arrangements of the array, each on a fresh load: as loaded, slot 0's `+0x16` cleared, every free slot below 198 filled, below 199, and all 200. Pins `aInsertUnit`'s slot rule ([`docs/94`](../../../docs/94-slice-2-report.md) §9 item 6): the lowest `+0x16 == 0`, a refusal at 199, slot 200 past the array when full |
+| `aGenerateUnitElement` | `0x00479CF0` | **phase 15, `spawn`** — a computer `Ray'Ther` spawned on (14,6) in five arrangements of the array, each on a fresh load: as loaded, slot 0's `+0x16` cleared, every free slot below 198 filled, below 199, and all 200. Pins `aInsertUnit`'s slot rule ([`docs/94`](../94-slice-2-report.md) §9 item 6): the lowest `+0x16 == 0`, a refusal at 199, slot 200 past the array when full |
 
 `aBuildVisibleMap` `0x004798C0` is pinned too, without a phase of its own: the
 refresh runs the fog pass, so the `+0x4F` bytes read back after `aRefreshPlayer`
@@ -34,7 +34,7 @@ rather than assumed.
 
 **The whole hand-over `0x0047D600` is deliberately not called.** It ends by
 invoking `aAISystemControl` once the current player becomes 255
-([`docs/25`](../../../docs/25-turn-and-round.md) §4) — the computer's entire
+([`docs/25`](../25-turn-and-round.md) §4) — the computer's entire
 turn, which is out of this stage's scope and not something to start inside a
 debugger probe. `0x0043B320` is the part §3.1 specifies and the part a remake's
 turn sits on.
@@ -50,7 +50,7 @@ rather than the mask living here.
 `0x00419A40` returns the loaded mission program's id from `[0x4fd223]`, and
 `0x0043F6E0` runs it. The plan's oracle table named `0x004402A0` as "the
 program is called"; it is the environment setter, and
-[`docs/20`](../../../docs/20-lcl-language.md)'s own table says so.
+[`docs/20`](../20-lcl-language.md)'s own table says so.
 
 The sharp part of that phase is the generator. The engine's seed at
 `0x00514078` — a **qword**, `fld`/`fst` — is `1.0` when the mission is loaded
@@ -62,7 +62,7 @@ nothing is inserted: the two draws yield 2 and 39 against a threshold of
 
 **Class 12 leaves the ammunition byte unchanged here, and that is correct.**
 `aExecuteUse` on a "full munition" point sets `unit[+0x3D]` to the weapon's
-magazine ([`docs/26`](../../../docs/26-interaction.md) §3.1) — it does not add
+magazine ([`docs/26`](../26-interaction.md) §3.1) — it does not add
 to it. The probe unit carries a `Standard Assault Rifle`, whose `mun` is 10,
 and it was already holding 10. So the byte is identical before and after while
 the action point *is* consumed. The check therefore asserts
@@ -116,7 +116,7 @@ Since 2026-09-02 each move probe's `expected` also carries `records_after`
 — `+0x4F`, `+0x47` and `+0x48` of every live record after the call — and the
 `units` records carry `order`, `order_param`, `order2`, `order2_param` and
 `group`, because the three visibility passes inside `aExecuteMove`
-([`docs/22`](../../../docs/22-combat-and-visibility.md) §9.3) read and write
+([`docs/22`](../22-combat-and-visibility.md) §9.3) read and write
 them. On this capture nothing changes: the player's mover sees nothing new
 from its two-step path, so what the six comparisons pin is the absence of a
 write.
@@ -127,7 +127,7 @@ The six probes walk the identical reconstructed path — `(2,0)` → `(3,0)`
 orthogonal, `(3,0)` → `(4,1)` diagonal — and every mutation is written *after*
 the fill and the walk, so nothing about the route can differ between them. That
 is not tidiness: the fill refuses to step a non-alien mover onto a mine
-([`docs/23`](../../../docs/23-ai-system.md) §7.1), so a mine written before it
+([`docs/23`](../23-ai-system.md) §7.1), so a mine written before it
 would simply be routed around and the arm would never run.
 
 | probe | cost | ends at | `+0x50` | `+0x46` | `+0x15` | returns |
@@ -141,16 +141,16 @@ would simply be routed around and the arm would never run.
 
 Four readings come out of that table. The step cost is `base + delay(entered)`
 with `base` 1 and 2 — the **cell being left is not charged**, which
-[`docs/26`](../../../docs/26-interaction.md) §5's "twice for the delay" could
+[`docs/26`](../26-interaction.md) §5's "twice for the delay" could
 not decide. The distance is 10 and 15 tenths. The facing is the last step's,
 which is the second native confirmation of
-[`inclib/lev.py`](../../../tools/inclib/lev.py)'s `FACING_STEPS` — the `mine`
+[`inclib/lev.py`](../../tools/inclib/lev.py)'s `FACING_STEPS` — the `mine`
 row is the one that proves it, because it stopped on the orthogonal step and
 came back holding 3 while every other probe ended on the diagonal holding 6.
 And a VictoryPoint at `0x50` walked onto by player 0 becomes `0x51`, for free.
 
 The mine row is the one that contradicts a published claim, and it is written
-up in [`docs/26`](../../../docs/26-interaction.md) §6.1: the walk stops, the
+up in [`docs/26`](../26-interaction.md) §6.1: the walk stops, the
 movement points are zeroed *inside* the routine, FALSE comes back with a cost
 of 0 — and no `ParaBomb` fires. `aRandom`'s seed is bit-identical either side,
 the soldier's 11 hit points are untouched, and the mine is still on the cell.
@@ -187,7 +187,7 @@ exactly the kind of check this repository treats as a bug:
   row is left open instead.
 * **`special` 12 is not reached.** The guaranteed-hit rule is pinned for
   `special` 13 (`Case`, every crate on this map); 12 (`Barrel`, `Parabomb`)
-  carries the same rule in [`docs/22`](../../../docs/22-combat-and-visibility.md)
+  carries the same rule in [`docs/22`](../22-combat-and-visibility.md)
   §7 but no such unit stands here, and its neighbour explosion — and
   `special` 16's — is not modelled at all.
 * **The overheat roll never comes up 30**, so the arm that destroys the
@@ -218,7 +218,7 @@ exactly the kind of check this repository treats as a bug:
   in passing" is a model claim and not a measured one. Writing it onto the
   middle cell instead would settle it and costs one more probe.
 * **`aRefreshPlayer(252)` is not captured at all**, deliberately:
-  [`docs/25`](../../../docs/25-turn-and-round.md) §7 says 252 is never stored
+  [`docs/25`](../25-turn-and-round.md) §7 says 252 is never stored
   in the current-player byte, so it is a call the engine itself never makes.
   An earlier version of this capture pinned the refresh on exactly that player,
   over crate records with nothing to restore, and would have agreed with a
@@ -312,13 +312,13 @@ python3 tools/turn_gold.py --check gog_incubation
 
 ## What the capture pins
 
-* **The save is the one `tests/fixtures/saves/README.md` records**, sha256
+* **The save is the one [`saves.md`](saves.md) records**, sha256
   `5e7ddd98…`, on `_C_141` of `World_A00`, 20×20.
 * **The AI level of the captured session is 0**, not the 1 the models default
   to. It is an input to the movement allowance (for unit type `0x32`) and to
   the damage roll's span, so the check reads it out of the capture rather than
   assuming it — `movemap_gold.py` learned that the hard way.
-* **Wine start-up on this host is intermittent** ([`docs/91`](../../../docs/91-wine-runtime-probes.md) §1).
+* **Wine start-up on this host is intermittent** ([`docs/91`](../91-wine-runtime-probes.md) §1).
   A phase that never reaches the anchor is an environment result; the launcher
   retries up to ten times, and a phase can succeed on attempt 1 or on attempt 8.
   The capture that produced this file needed attempt 4 twice. **Do not lower

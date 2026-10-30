@@ -2,7 +2,7 @@
 
 One directory per pass, named by its date, holding the screenshots a driven
 session of the **shipping export** filed through the agent server
-(`--agent-port=`, [`docs/92` §7.16](../../../docs/92-remake-architecture.md))
+(`--agent-port=`, [`docs/92` §7.16](../92-remake-architecture.md))
 and the process's own log. The pictures are of Blue Byte's art, so the
 directories are gitignored (`tests/fixtures/play/*/`); this file is committed
 and records what each pass drove and what it found. The pass itself is
@@ -34,7 +34,7 @@ the 640×480 plate scaled by two.
 
 ## 2026-09-13 — the whole game, nine slices after the last pass
 
-Reported in [`docs/101` §15](../../../docs/101-slice-9-report.md). Build
+Reported in [`docs/101` §15](../101-slice-9-report.md). Build
 `36d5e32` plus the working tree of that day (debug export, so the developer
 status line is on), cache `1-0.41.0-English-892e1299ddb5-3401aa12f66e`,
 settings as found (Hard, gore 3, faithful on, music off, FX 100 %).
@@ -74,7 +74,7 @@ key or a mouse press (`FlyInScreen._unhandled_input`, the original's
 `0x004fcbdc`), and no driver verb that runs during a flight pushes one. The
 code is correct and the reading does not reproduce, so it is a one-off
 mis-timing or a stray desktop keypress — closed, not carried as a question
-([`docs/101` §15](../../../docs/101-slice-9-report.md)).
+([`docs/101` §15](../101-slice-9-report.md)).
 
 Four things worth knowing before someone calls one of them a defect:
 
@@ -93,7 +93,7 @@ Four things worth knowing before someone calls one of them a defect:
   not from the last. The first visit, filed from the flight's start, has them.
 * **A computer walk can look at a wall.** `56_instant_t2` — filed during
   `advances 5` — is a frame of nothing but wall texture. That is
-  [`docs/42` §3.2](../../../docs/42-mission-presentation.md)'s **mode 2**: a
+  [`docs/42` §3.2](../42-mission-presentation.md)'s **mode 2**: a
   mover seen only at its destination is watched *from its own eyes*, the eye
   riding on the unit at head height with the unit's object hidden, so an alien
   walking a corridor out of the fog shows the corridor's wall. The three

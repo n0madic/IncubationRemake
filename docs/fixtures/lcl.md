@@ -2,7 +2,7 @@
 
 `cases_lcl.json` is **not a capture**. It is the executable model's own answers,
 re-expressed for the GDScript side — the same arrangement
-[`../turn/README.md`](../turn/README.md) describes for `cases_handover.json`,
+[`turn.md`](turn.md) describes for `cases_handover.json`,
 and for the same reason: there is no native oracle for a whole mission program.
 `tools/turn_gold.py` pins **one** invocation of `_C_141`'s `NEXT PLAYER` inside
 the live engine (two `aRandom` draws, seed 1.0 → 847344462.0, no game-control
@@ -23,8 +23,8 @@ all derived from Blue Byte data.
 > The commit that created it added the file **and** the `.gitignore` line in one
 > `git add -A`, and gitignore has no effect on an already-tracked path — so for
 > fourteen commits this sentence was false and 560 KB of extracted retail data
-> was tracked. `git rm --cached` fixed the tracking; the blob is still in the
-> local history at `0bcf348`, and nothing has been pushed. Add the ignore rule
+> was tracked. `git rm --cached` fixed the tracking, and the blob was later purged
+> from the whole history with `git filter-repo` (2026-10-30). Add the ignore rule
 > **before** the first run that writes the file.
 
 ## What it holds

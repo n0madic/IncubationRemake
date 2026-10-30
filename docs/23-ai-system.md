@@ -800,7 +800,7 @@ into the mover's own cell returns an otherwise empty map whose start cell holds
 state 10 and the mover's movement points, so the seeding has already happened
 when the refusal returns. The `special` refusal is genuinely first: it marks
 nothing. See [`93` §3](93-slice-1-report.md) and
-`tests/fixtures/movemap/README.md`.
+`docs/fixtures/movemap.md`.
 
 ### 7.2 The queue
 

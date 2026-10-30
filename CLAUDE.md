@@ -246,8 +246,8 @@ before running a capture or judging one: its operational rules (intermittent
 Wine start-up, no `--code` on `Incubation.exe`, stale and zero-record phases)
 have each cost a re-run.
 
-Fixtures live in `tests/fixtures/`, are **all gitignored**, and each directory's
-committed `README.md` records what it holds. `tests/fixtures/saves/` holds six
+Fixtures live in `tests/fixtures/`, are **all gitignored**, and
+[`docs/fixtures/`](docs/fixtures/) holds one page per directory recording what it holds. `tests/fixtures/saves/` holds six
 real saves made by running the retail game under Wine from a **copy**
 (`wine explorer /desktop=inc,640x480 Incubation.exe -english`); `.sav` is the
 only format the game writes and each save embeds a whole `.lev`.

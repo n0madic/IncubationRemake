@@ -3,8 +3,8 @@
 Nine real saves were produced by playing the retail game under Wine; these six
 are the ones no other file in the set duplicates. They are the only real `.sav`
 data this project has ever had, and they closed or narrowed five open questions
-in [`../../../docs/11-save-game-format.md`](../../../docs/11-save-game-format.md)
-and [`../../../docs/25-turn-and-round.md`](../../../docs/25-turn-and-round.md).
+in [`docs/11-save-game-format.md`](../11-save-game-format.md)
+and [`docs/25-turn-and-round.md`](../25-turn-and-round.md).
 
 ## The `.sav` files are not in git
 
@@ -153,7 +153,7 @@ a single-player campaign never fills it. That block needs a `net session` save.
 `sav_parse.py --wrap` writes a save carrying a different mission's `.lev`
 between one of these saves' fixed blocks. It is how `presentation_gold.py`
 reaches `World_D00`, the one world set with `GLOW1/2.3DI`
-([`docs/97` §38.1](../../../docs/97-slice-5-report.md)):
+([`docs/97` §38.1](../97-slice-5-report.md)):
 
 ```bash
 python3 tools/sav_parse.py tests/fixtures/saves/_6_.sav \

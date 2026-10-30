@@ -270,8 +270,8 @@ recording because of *what kind* of mistake they were.
 that created `tests/fixtures/lcl/cases_lcl.json` added it and the `.gitignore`
 line in the same `git add -A`, and gitignore has no effect on an already-tracked
 path — so the file's own committed README said "it is gitignored" while it was
-not. Untracked now; the blob remains in the local history at `0bcf348`, and
-nothing has been pushed anywhere. This is the project's oldest rule and it was
+not. Untracked now, and the blob was later purged from the whole history with
+`git filter-repo` (2026-10-30). This is the project's oldest rule and it was
 broken by the mechanics of one command.
 
 **Two checks were structurally dead.** `interact_runtime`'s

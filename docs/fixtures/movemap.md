@@ -2,7 +2,7 @@
 
 `aBuildMoveMap` (`0x00430A40`) called **inside a running `Incubation.exe`**, on
 mission `_C_141` loaded from save slot 6.  This is the rank-1 oracle
-([`docs/92`](../../../docs/92-remake-architecture.md) §5) that
+([`docs/92`](../92-remake-architecture.md) §5) that
 `tools/inclib/movemap.py` and `godot/core/move_map.gd` are diffed against.
 
 ## The `.json` files are not in git
@@ -23,7 +23,7 @@ python3 tools/movemap_gold.py --check gog_incubation
 ```
 
 The game copy needs `Work/Saves2/_6_.sav` (the TestVersion executable uses
-`Saves2`, [`docs/91`](../../../docs/91-wine-runtime-probes.md) §2).  Never run
+`Saves2`, [`docs/91`](../91-wine-runtime-probes.md) §2).  Never run
 it from `gog_incubation/`; the tool refuses a path inside this repository.
 
 ## How the mission is reached
@@ -165,12 +165,12 @@ Five things were wrong, and only a live call could show any of them --
 the last is about the capture itself rather than about the specs:
 
 1. **The start cell is seeded before the shield refusal, not after.**
-   [`docs/23`](../../../docs/23-ai-system.md) §7.1 orders them the other way.
+   [`docs/23`](../23-ai-system.md) §7.1 orders them the other way.
    With `cell[+0x10] = 3` written into the mover's own cell the engine returns
    an otherwise empty map whose start cell holds state 10 and the mover's
    movement points.  The `special` refusal is genuinely first: it marks nothing.
 2. **The warp pass does not overwrite a cell the fill already marked.**
-   [`docs/10`](../../../docs/10-lev-mission-format.md) §4.5 lists five
+   [`docs/10`](../10-lev-mission-format.md) §4.5 lists five
    acceptance tests; there is a sixth.  Over three warp runs, 13 cells the
    model would have turned into warp targets kept their 10.
 3. **The test for it is on `cell[+0x00]`, not on `cell[+0x0C]`.** Nine cells
@@ -192,7 +192,7 @@ the last is about the capture itself rather than about the specs:
    never runs — and FALSE on all 48 that ran a wave.  A 4-direction
    transcription agreed with the engine on 71 of the first 72 by luck, and the one
    that disagreed only appeared because the clearance work added a wider fill
-   than the capture had held before.  [`docs/23`](../../../docs/23-ai-system.md)
+   than the capture had held before.  [`docs/23`](../23-ai-system.md)
    §7.6.
 
 ## Every fill in the file

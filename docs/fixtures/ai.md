@@ -1,7 +1,7 @@
 # Native AI captures, and the cases derived from them
 
 Two files, both **gitignored**, both derived from Blue Byte data the way
-`tools/out/` is. This README is the committed record of what they hold.
+`tools/out/` is. This page is the committed record of what they hold.
 
 | File | Written by | What it is |
 | --- | --- | --- |
@@ -10,15 +10,15 @@ Two files, both **gitignored**, both derived from Blue Byte data the way
 
 They were tracked in git until the third slice noticed. The rule is the
 project's oldest — extracted retail data is not committed — and
-[`docs/94` §8](../../../docs/94-slice-2-report.md) records the same mistake
+[`docs/94` §8](../94-slice-2-report.md) records the same mistake
 being made once before with `cases_lcl.json`, by a `git add -A` that added the
 file and its `.gitignore` line in the same commit. Here the `.gitignore` line
-was simply never written. Both are untracked now; the blobs remain in the local
-history at `7ad818a` and nothing has been pushed anywhere.
+was simply never written. Both are untracked now, and the blobs were then purged
+from the whole history with `git filter-repo` (2026-10-30).
 
 ## What `capture_ai.json` pins
 
-The session is the one [`tools/movemap_gold.py`](../../../tools/movemap_gold.py)
+The session is the one [`tools/movemap_gold.py`](../../tools/movemap_gold.py)
 established: the same anchor inside `aGameIntro` (`Incubation.exe+0x4bd6f`),
 the same ten-attempt retry loop, and the byte writer reaching the game's own
 imported `memcpy` — **not** `--code`, which on this host makes the image fault
@@ -36,7 +36,7 @@ records.
 | `predicates` | `0x0040B000` / `0x0040B040` / `0x0040B080` | the three ownership tests, over 90 ordered pairs |
 | `cover` | `0x0040B0D0` | the cover score over 60 cells, **and the two bytes it reads past the unit array** |
 | `overlay` | `0x0042FF30`, `0x0042FE90` | the target overlay and its prune, read back as cells |
-| `bands` | `0x0042FF30` + `0x0046A270` | **the five hit-chance bands**, one point either side of each of [`docs/23`](../../../docs/23-ai-system.md) §6's four boundaries |
+| `bands` | `0x0042FF30` + `0x0046A270` | **the five hit-chance bands**, one point either side of each of [`docs/23`](../23-ai-system.md) §6's four boundaries |
 | `approach` | `0x0040ADC0` | the approach cell over 10 targets, small mover and large |
 | `approach_tie` | `0x0040ADC0` | one target **twice** per arm, a `best` buffer each, so the second call is a tie: `jl` (small) takes it, `jle` (large) refuses it -- taken 2026-09-12 |
 | `helpers` | `0x0040B380`, `0x0040A6E0`, `0x0040B210`, `0x0040B250`, `0x0047A810` | the five order helpers, by record dumps either side |
@@ -67,7 +67,7 @@ not undo it.
 ## `cases_ai.json` carries one payload field, and only one
 
 The replay cases record every event's **arguments** and not just its name --
-[`docs/94`](../../../docs/94-slice-2-report.md) §8 records what comparing names
+[`docs/94`](../94-slice-2-report.md) §8 records what comparing names
 alone cost once. Nested payloads are deliberately left out: an `AttackResult`
 is already pinned by `test_combat_native.gd`, and carrying it here would make
 this fixture a copy of that one.
@@ -105,7 +105,7 @@ python3 tools/ai_gold.py --game-copy /somewhere/outside/the/repo \
 `ai_gold.py` **refuses a game directory inside this repository**, which is what
 keeps `gog_incubation/` read-only. Phases are written as they land and merged
 on re-run, so a bounded run loses at most the phase in flight — and Wine
-start-up on this host is intermittent ([`docs/91`](../../../docs/91-wine-runtime-probes.md)
+start-up on this host is intermittent ([`docs/91`](../91-wine-runtime-probes.md)
 §1), so a phase can reach the anchor on attempt 1 or on attempt 8. **Do not
 lower `--attempts` to bound a run**; bound the whole invocation with `timeout`
 instead.

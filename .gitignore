@@ -21,12 +21,9 @@ tools/wine_control/*.exe
 tools/wine_visn/*.exe
 tools/wine_visn/build/
 
-# Native captures: derived from Blue Byte data, like tools/out/.
-# The committed README.md beside them records what each one pins.
-tests/fixtures/*/*.json
-# The by-hand pass's screenshots (tests/fixtures/play/README.md): pictures of
-# Blue Byte's art, filed per pass and never committed.
-tests/fixtures/play/*/
+# Native captures, saves and the by-hand pass's screenshots: all derived from
+# Blue Byte data, like tools/out/. docs/fixtures/ records what each one pins.
+tests/fixtures/
 
 # Machine-local Makefile settings (LANGUAGE_PACKS and the like).
 local.mk

@@ -30,7 +30,7 @@ tools/
   remake_convert.py        --check: 35 checks; --check-cache: 9 checks
   movemap_gold.py          --check: 10 checks against the live engine
   verify_untouched.sh      the installation is byte-for-byte unchanged
-tests/fixtures/movemap/    gitignored captures + a committed README
+tests/fixtures/movemap/    gitignored captures (described in docs/fixtures/movemap.md)
 ```
 
 The path runs end to end: a read-only installation is converted into a

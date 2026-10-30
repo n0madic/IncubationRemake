@@ -794,7 +794,7 @@ handles, and `docs/10`'s row is corrected in place.
 
 `tools/presentation_gold.py` drives the engine inside a running
 `Incubation.exe` (`docs/91`'s anchor, the fixture save `_6_.sav`, `_C_141`)
-in two phases; `tests/fixtures/presentation/README.md` records what each
+in two phases; `docs/fixtures/presentation.md` records what each
 holds.
 
 **`idle_random`** calls the starter two hundred times, asking for type 50,

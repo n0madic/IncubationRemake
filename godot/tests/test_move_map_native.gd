@@ -10,7 +10,7 @@ extends TestSuite
 ## refusals and all three transient obstacles are covered natively rather than
 ## only synthetically.
 ##
-## See `tests/fixtures/movemap/README.md` for how the capture is taken and what
+## See `docs/fixtures/movemap.md` for how the capture is taken and what
 ## it corrected in the specs.
 
 func run(h: TestHarness) -> void:

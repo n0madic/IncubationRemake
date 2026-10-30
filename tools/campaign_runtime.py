@@ -858,7 +858,7 @@ def check_saves(ck: Checker, directory: Path) -> None:
     """
     saves = sorted(directory.glob("*.sav"))
     if not saves:
-        LOG.error("%s holds no .sav -- see tests/fixtures/saves/README.md",
+        LOG.error("%s holds no .sav -- see docs/fixtures/saves.md",
                   directory)
         return
     for path in saves:

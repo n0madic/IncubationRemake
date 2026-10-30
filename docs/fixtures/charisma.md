@@ -23,7 +23,7 @@ takes a constructed part with a loaded descriptor and a bound movement, not
 values, so standing one up is most of a loader.
 
 So the boundary here is **rank 2, executable Python**
-([`docs/92`](../../../docs/92-remake-architecture.md) §5): `tools/inclib/pose.py`
+([`docs/92`](../92-remake-architecture.md) §5): `tools/inclib/pose.py`
 is the reference and the GDScript sampler is diffed against it. What keeps that
 honest is that `inclib/pose.py` is not a fresh transcription — it is the model
 that draws `tools/out/skeletons/*.png`, whose four contact sheets are the
@@ -33,7 +33,7 @@ before and after being lifted out of `tools/cho_export.py`.
 ## What the file holds
 
 311 `(model, animation)` pairs — every pairing the four selectors of
-[`docs/40`](../../../docs/40-charisma-model-animation.md) §7.2 can actually
+[`docs/40`](../40-charisma-model-animation.md) §7.2 can actually
 produce, so no clip is posed against a body it is never chosen with.
 
 Per case:

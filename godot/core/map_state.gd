@@ -23,7 +23,7 @@ extends RefCounted
 ## Its three branches -- fire, mine and shield -- have zero corpus coverage:
 ## `cell[+0x10]` is 255 in all 184162 shipped cells because it is created during
 ## play.  The native capture reaches them by writing the byte in the live
-## process (`tests/fixtures/movemap/README.md`).
+## process (`docs/fixtures/movemap.md`).
 ##
 ## docs/23 section 7.1 amendment to docs/92 section 7.2: `+0x0F` and `+0x11` are
 ## **slot indices** into the runtime object array while `+0x0E` and `+0x10` are

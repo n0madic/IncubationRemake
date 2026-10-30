@@ -3,7 +3,7 @@
 **Status:** structure complete. Every structural claim below is checked
 against `Incubation.exe` by `tools/sav_tables.py --check`; the value-level
 claims of §4–§5.8 are checked against six real saves, kept (gitignored) in
-[`tests/fixtures/saves/`](../tests/fixtures/saves/README.md).
+[`tests/fixtures/saves/`](fixtures/saves.md).
 
 This is the only format the *game* writes. Everything else in `docs/` is
 produced by an authoring tool and only read at run time, so the corpus can
@@ -745,7 +745,7 @@ under Wine, they are kept in `tests/fixtures/saves/` and are
 what this document's §4, §5.2, §5.3, §5.5, §5.6, §5.7 and §5.8 cite. The `.sav`
 files themselves are gitignored — each embeds a byte-identical copy of a shipped
 `.lev` — but
-[`tests/fixtures/saves/README.md`](../tests/fixtures/saves/README.md) is
+[`docs/fixtures/saves.md`](fixtures/saves.md) is
 committed and records what each one pins, with digests.
 
 ## 9. Open questions

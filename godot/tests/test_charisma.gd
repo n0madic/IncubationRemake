@@ -15,7 +15,7 @@ extends TestSuite
 ## `tools/dbgcall/` can reach code inside a live process, but `V100Part::Update`
 ## takes a constructed part with a loaded descriptor and a bound movement --
 ## pointers, not values -- so standing one up is most of a loader.
-## `tests/fixtures/charisma/README.md` records this.
+## `docs/fixtures/charisma.md` records this.
 ##
 ## **The tolerance.** This is the project's first diff that is not exact
 ## integers: `slerp` and `squad` go through libm transcendentals, so Python and

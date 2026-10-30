@@ -945,7 +945,7 @@ frame. What the hand is, and what is synthetic about it, is exactly
 choice of pixel and moment is the driver's.
 
 The route, the shots and the numbers are in
-[`tests/fixtures/play/README.md`](../tests/fixtures/play/README.md), one row per
+[`docs/fixtures/play.md`](fixtures/play.md), one row per
 thing looked at; the pictures are gitignored beside it. In one line: menu →
 options → chain 1 → the intro → the map → the Unit Menu with a hire and its
 undo → base 1's fly-in with the squad marching the pad → the Upgrade Menu and

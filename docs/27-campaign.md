@@ -1669,7 +1669,7 @@ so `_C_100`, whose header carries mission id 1, is campaign **1**'s start and
 start enters the second chain — was a reading of one save:
 `tests/fixtures/saves/_0_.sav` is "the only fixture from a session that went
 straight into the campaign" and the mission it names is `_C_140`
-(`tests/fixtures/saves/README.md`). That shows **that session** chose campaign
+(`docs/fixtures/saves.md`). That shows **that session** chose campaign
 2, not that the other start does not exist. All six fixtures carry
 `campaign = 2` at `GameControl + 0x1D1`, which is consistent with both.
 

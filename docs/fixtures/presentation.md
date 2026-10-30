@@ -5,7 +5,7 @@
 running `Incubation.exe` under `tools/dbgcall`, with the slot table, the
 second Lehmer seed, the live `StdAnimation`, the bound parts and the blob pool
 read back. It is the measurement behind
-[`docs/42` §4.8.1 and §6](../../../docs/42-mission-presentation.md).
+[`docs/42` §4.8.1 and §6](../42-mission-presentation.md).
 
 ## The `.json` file is not in git
 
@@ -139,7 +139,7 @@ debris loop, which are transcribed from their instructions and not run.
 ## `capture_pose.json` — the eight `special_*` phases (2026-09-03)
 
 Slice E's, and the one family here that reads **cells** rather than the blob
-pool: the four placers of [`docs/42` §9.1](../../../docs/42-mission-presentation.md)
+pool: the four placers of [`docs/42` §9.1](../42-mission-presentation.md)
 are not blob creators, so the death phases' shape does not fit them. Each phase
 loads the fixture save, reads the whole 20 × 20 control map and the whole
 80-slot special-object array `[0x004FA828]` (a **pointer**; each record is 66
@@ -222,7 +222,7 @@ renders.
 ## The special-object table phases *(added 2026-09-26)*
 
 Five `land_table_*` phases read `[0x004FA80C]` and its count `[0x004FA7B4]`
-(the table `0x00406F20` searches, [`docs/20`](../../../docs/20-lcl-language.md)
+(the table `0x00406F20` searches, [`docs/20`](../20-lcl-language.md)
 §7.4, item 12). None runs on `_6_.sav` alone: the capture **stages its own
 saves**, wrapping every shipped mission whose world set the installation
 carries -- all but `_I_001` -- into `_6_.sav`'s fixed blocks as
@@ -250,8 +250,8 @@ the record `FootBridge` frees.
 ## The body-aim phases *(added 2026-09-27)*
 
 Two phases measure `aAttackUnit`'s waist aim `0x0042CD80`
-([`docs/22`](../../../docs/22-combat-and-visibility.md) §7.1 step 5,
-[`docs/40`](../../../docs/40-charisma-model-animation.md) §6.4): `body_aim`
+([`docs/22`](../22-combat-and-visibility.md) §7.1 step 5,
+[`docs/40`](../40-charisma-model-animation.md) §6.4): `body_aim`
 on `_6_.sav`'s Sgt. Bratt (unit 3, type 23) and `body_aim_marine` on
 `_0_.sav`'s Rock (unit 3, type 0) -- **stage `tests/fixtures/saves/_0_.sav`
 as `Work/Saves2/_0_.sav`** in the copy as well. Each aims the body at nine
